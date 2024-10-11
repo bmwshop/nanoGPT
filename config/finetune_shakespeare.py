@@ -25,3 +25,4 @@ learning_rate = 3e-5
 decay_lr = False
 
 wpe = True
+flash = True

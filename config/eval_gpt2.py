@@ -7,4 +7,5 @@ eval_only = True
 wandb_log = False
 init_from = 'gpt2'
 
-wpe = True
+flash = True
+

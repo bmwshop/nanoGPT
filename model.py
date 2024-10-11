@@ -41,8 +41,13 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.dropout = config.dropout
-        # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+        if config.flash:
+            # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
+            self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+        else:
+            print(f'flash is turned off. gpus will not go brrrr')
+            self.flash = False
+
         if not self.flash:
             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
             # causal mask to ensure that attention is only applied to the left in the input sequence
@@ -115,6 +120,7 @@ class GPTConfig:
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     wpe: bool = True # Should we use positional embeddings?
+    flash: bool = True # Should we use FA if available?
 
 class GPT(nn.Module):
 

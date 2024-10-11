@@ -41,6 +41,7 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.dropout = config.dropout
+
         if config.flash:
             # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
             self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
@@ -137,7 +138,10 @@ class GPT(nn.Module):
         self.transformer['ln_f'] = LayerNorm(config.n_embd, bias=config.bias)
 
         if self.config.wpe:
+            print(f'using wpe')
             self.transformer['wpe'] = nn.Embedding(config.block_size, config.n_embd)
+        else:
+            print(f'NoPE!')
 
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         # with weight tying when using torch.compile() some warnings get generated:

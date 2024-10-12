@@ -133,6 +133,7 @@ class GPTConfig:
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     pe: str = 'abs' # positional embeddings: 'abs', 'rope', 'alibi', 'nope'
     flash: bool = True # Should we use FA if available?
+    rope_base: int = 10000 # rope base
 
 class GPT(nn.Module):
 

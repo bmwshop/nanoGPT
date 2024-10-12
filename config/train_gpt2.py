@@ -24,5 +24,5 @@ log_interval = 10
 # weight decay
 weight_decay = 1e-1
 
-wpe = True
+pe = 'abs'
 flash = True

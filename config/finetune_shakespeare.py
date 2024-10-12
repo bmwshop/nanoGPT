@@ -24,5 +24,5 @@ max_iters = 20
 learning_rate = 3e-5
 decay_lr = False
 
-wpe = True
+pe = 'abs'
 flash = True

@@ -6,6 +6,7 @@ import pickle
 from contextlib import nullcontext
 import torch
 import tiktoken
+import logging
 from model import GPTConfig, GPT
 
 # -----------------------------------------------------------------------------
@@ -20,6 +21,10 @@ seed = 1337
 device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32' or 'bfloat16' or 'float16'
 compile = False # use PyTorch 2.0 to compile the model to be faster
+
+# Dima
+pe = 'abs' # examples: 'abs', 'rope', 'alibi', 'nope'
+flash = True # examples: 'True', 'False'
 exec(open('configurator.py').read()) # overrides from command line or config file
 # -----------------------------------------------------------------------------
 
@@ -36,6 +41,10 @@ if init_from == 'resume':
     # init from a model saved in a specific directory
     ckpt_path = os.path.join(out_dir, 'ckpt.pt')
     checkpoint = torch.load(ckpt_path, map_location=device)
+    # Dima
+    checkpoint['model_args']['pe'] = pe
+    checkpoint['model_args']['flash'] = flash
+
     gptconf = GPTConfig(**checkpoint['model_args'])
     model = GPT(gptconf)
     state_dict = checkpoint['model']
@@ -59,7 +68,7 @@ if init_from == 'resume' and 'config' in checkpoint and 'dataset' in checkpoint[
     meta_path = os.path.join('data', checkpoint['config']['dataset'], 'meta.pkl')
     load_meta = os.path.exists(meta_path)
 if load_meta:
-    print(f"Loading meta from {meta_path}...")
+    logging.info(f"Loading meta from {meta_path}...")
     with open(meta_path, 'rb') as f:
         meta = pickle.load(f)
     # TODO want to make this more general to arbitrary encoder/decoder schemes
@@ -68,7 +77,7 @@ if load_meta:
     decode = lambda l: ''.join([itos[i] for i in l])
 else:
     # ok let's assume gpt-2 encodings by default
-    print("No meta.pkl found, assuming GPT-2 encodings...")
+    logging.info("No meta.pkl found, assuming GPT-2 encodings...")
     enc = tiktoken.get_encoding("gpt2")
     encode = lambda s: enc.encode(s, allowed_special={"<|endoftext|>"})
     decode = lambda l: enc.decode(l)
@@ -85,5 +94,5 @@ with torch.no_grad():
     with ctx:
         for k in range(num_samples):
             y = model.generate(x, max_new_tokens, temperature=temperature, top_k=top_k)
-            print(decode(y[0].tolist()))
-            print('---------------')
+            logging.info(decode(y[0].tolist()))
+            logging.info('---------------')

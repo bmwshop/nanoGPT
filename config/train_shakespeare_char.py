@@ -36,5 +36,7 @@ warmup_iters = 100 # not super necessary potentially
 # device = 'cpu'  # run on cpu only
 # compile = False # do not torch compile the model
 
-wpe = True
+pe = 'rope'
+rope_base = 10000
+
 flash = True

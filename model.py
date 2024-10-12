@@ -44,6 +44,7 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.dropout = config.dropout
+        self.config = config
 
         if config.pe == 'rope':
             head_size = self.n_embd // self.n_head

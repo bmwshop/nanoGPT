@@ -15,7 +15,8 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from rope import SimpleRotaryEmbedding
+# from rope import SimpleRotaryEmbedding
+from rotary_position_embedding import RotaryEmbedding
 import logging
 
 class LayerNorm(nn.Module):
@@ -53,8 +54,9 @@ class CausalSelfAttention(nn.Module):
             rope_dtype = torch.bfloat16
             rope_base = config.rope_base
             logging.info(f'initializing rope with base {rope_base}')
-            self.rotary_emb = SimpleRotaryEmbedding(head_size, head_size, max_position, base = rope_base, dtype = rope_dtype)
-            self.positions = torch.arange(0, max_position)
+            # self.rotary_emb = SimpleRotaryEmbedding(head_size, head_size, max_position, base = rope_base, dtype = rope_dtype)
+            # self.positions = torch.arange(0, max_position)
+            self.rotary_pos_emb = RotaryEmbedding(head_size, rotary_base = rope_base)
 
         if config.flash:
             # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
@@ -79,7 +81,9 @@ class CausalSelfAttention(nn.Module):
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
 
         if self.config.pe == 'rope':
-            q, k = self.rotary_emb.forward(self.positions, q, k)
+            q = self.self.rotary_pos_emb(q)
+            k = self.self.rotary_pos_emb(k)
+            # q, k = self.rotary_emb.forward(self.positions, q, k)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:

@@ -81,6 +81,7 @@ class CausalSelfAttention(nn.Module):
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
 
         if self.config.pe == 'rope':
+            # this call expects shape [seq_length, ..., dim]
             q = self.rotary_pos_emb.apply(q)
             k = self.rotary_pos_emb.apply(k)
             # q, k = self.rotary_emb.forward(self.positions, q, k)

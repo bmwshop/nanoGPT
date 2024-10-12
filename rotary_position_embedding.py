@@ -44,7 +44,8 @@ class RotaryEmbedding():
         emb = torch.cat((freqs, freqs), dim=-1)
         # emb [seq_length, .., dim]
         # self.freqs = rearrange(emb, 'n d -> n 1 1 d')
-        self.freqs = rearrange(emb, 'n d -> 1 1 n d')
+        # self.freqs = rearrange(emb, 'n d -> 1 1 n d')
+        self.freqs = emb
 
 #     def forward(self, max_seq_len):
 #         seq = torch.arange(max_seq_len, device=self.inv_freq.device)

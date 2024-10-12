@@ -32,7 +32,9 @@ class RotaryEmbedding():
         super().__init__()
         self.rotary_base = rotary_base
         self.max_seq_len = max_seq_len
-        self.inv_freq = 1.0 / (self.rotary_base ** (torch.arange(0, dim, 2).float() / dim))
+        inv_freq = 1.0 / (self.rotary_base ** (torch.arange(0, dim, 2).float() / dim))
+        self.inv_freq.to('cuda')
+
         ## self.register_buffer('inv_freq', inv_freq)
 
         seq = torch.arange(self.max_seq_len, device=self.inv_freq.device)
@@ -44,8 +46,8 @@ class RotaryEmbedding():
         emb = torch.cat((freqs, freqs), dim=-1)
         # emb [seq_length, .., dim]
         # self.freqs = rearrange(emb, 'n d -> n 1 1 d')
-        # self.freqs = rearrange(emb, 'n d -> 1 1 n d')
-        self.freqs = emb
+        self.freqs = rearrange(emb, 'n d -> 1 1 n d')
+        # self.freqs = emb
 
 #     def forward(self, max_seq_len):
 #         seq = torch.arange(max_seq_len, device=self.inv_freq.device)

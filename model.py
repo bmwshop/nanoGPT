@@ -81,8 +81,8 @@ class CausalSelfAttention(nn.Module):
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
 
         if self.config.pe == 'rope':
-            q = self.rotary_pos_emb(q)
-            k = self.rotary_pos_emb(k)
+            q = self.rotary_pos_emb.apply(q)
+            k = self.rotary_pos_emb.apply(k)
             # q, k = self.rotary_emb.forward(self.positions, q, k)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)

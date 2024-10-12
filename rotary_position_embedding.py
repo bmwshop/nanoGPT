@@ -57,7 +57,7 @@ class RotaryEmbedding():
 #         return rearrange(emb, 'n d -> n 1 1 d')
 
     # def apply_rotary_pos_emb(t, freqs):
-    def apply_rotary_pos_emb(self, t):
+    def apply(self, t):
         """
         input tensor t is of shape [seq_length, ..., dim]
         rotary positional embeding tensor freqs is of shape [seq_length, ..., dim]

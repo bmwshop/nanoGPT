@@ -16,6 +16,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 from rotary_position_embedding import RotaryEmbedding, apply_rotary_pos_emb
+from xpos2_position_embedding import Xpos2Embedding, apply_xpos2_emb
 from alibi_relative_position_embedding import build_slopes
 from flash_attn import flash_attn_func
 import logging
@@ -49,12 +50,15 @@ class CausalSelfAttention(nn.Module):
         self.config = config
 
         self.alibi_slopes = None
+        head_size = self.n_embd // self.n_head
 
         if config.pe == 'rope':
-            head_size = self.n_embd // self.n_head
-            rope_base = config.rope_base
-            logging.debug(f'initializing rope with base {rope_base}')
-            self.rotary_pos_emb = RotaryEmbedding(head_size, rotary_base = rope_base)
+            logging.debug(f'initializing rope with base {config.rope_base}')
+            self.rotary_pos_emb = RotaryEmbedding(head_size, rotary_base = config.rope_base)
+        elif config.pe == 'xpos2':
+            self.rotary_pos_emb = Xpos2Embedding(head_size, rotary_base = config.rope_base,
+                max_pos = config.block_size, decay_base = config.xpos2_decay_base, decay_angle = config.xpos2_decay_amgle, 
+                dtype = config.dtype, adaptive = config.xpos2_adaptive)
         elif config.pe == 'alibi':
             self.alibi_slopes = build_slopes(
                 num_attention_heads=config.n_head,
@@ -86,9 +90,13 @@ class CausalSelfAttention(nn.Module):
 
         if self.config.pe == 'rope':
             # this call expects shape [seq_length, ..., dim]
-            freqs = self.rotary_pos_emb(q.shape[-2]) # hs
-            q = apply_rotary_pos_emb(q, freqs)
-            k = apply_rotary_pos_emb(k, freqs)
+            angles = self.rotary_pos_emb(q.shape[-2]) # hs
+            q = apply_rotary_pos_emb(q, angles)
+            k = apply_rotary_pos_emb(k, angles)
+        elif self.config.pe == 'xpos2':
+            # this call expects shape [seq_length, ..., dim]
+            angles, scales = self.rotary_pos_emb(q.shape[-2]) # hs
+            q,k = apply_xpos2_emb(q, k, angles, scales)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
@@ -100,6 +108,7 @@ class CausalSelfAttention(nn.Module):
             y = y.transpose(1,2)
         else:
             # manual implementation of attention
+            # TODO D.R. this is incorrect i think and needs to be debugged
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             if self.config.pe == 'alibi':
                 # D.R. do we keep the * (1.0 / math.sqrt(k.size(-1))) from the above or not?

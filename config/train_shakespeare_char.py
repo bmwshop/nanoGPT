@@ -39,4 +39,11 @@ warmup_iters = 100 # not super necessary potentially
 pe = 'rope'
 rope_base = 10000
 
+dtype = 'bfloat16'
+xpos2_decay_base = 2
+
+import math
+xpos2_decay_angle = math.pi / 2
+xpos2_adaptive = True
+
 flash = True

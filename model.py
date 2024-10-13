@@ -16,7 +16,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 from rotary_position_embedding import RotaryEmbedding, apply_rotary_pos_emb
-from alibi_relative_position_embedding import ALiBiRelativePositionEmbedding, build_slopes
+from alibi_relative_position_embedding import build_slopes
 from flash_attn import flash_attn_func
 import logging
 
@@ -52,9 +52,6 @@ class CausalSelfAttention(nn.Module):
 
         if config.pe == 'rope':
             head_size = self.n_embd // self.n_head
-            # max_position = config.block_size
-            # let's just hardcode it here for now
-            rope_dtype = torch.bfloat16
             rope_base = config.rope_base
             logging.debug(f'initializing rope with base {rope_base}')
             self.rotary_pos_emb = RotaryEmbedding(head_size, rotary_base = rope_base)
@@ -64,7 +61,6 @@ class CausalSelfAttention(nn.Module):
                 num_attention_heads_alibi=config.n_head, # it is a useful options to have not to rotate all alibi dims
             ).squeeze().float() # shape: (nheads,)
 
-            # self.alibi = ALiBiRelativePositionEmbedding()
 
         if config.flash:
             # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
@@ -107,11 +103,12 @@ class CausalSelfAttention(nn.Module):
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             if self.config.pe == 'alibi':
                 # D.R. do we keep the * (1.0 / math.sqrt(k.size(-1))) from the above or not?
+                att = att * math.sqrt(k.size(-1))
                 alibi_bias = torch.arange(T, device=att.device).unsqueeze(0)  # Shape: (1, T)
                 # self.alibi_slopes: # shape: (nheads,)
                 alibi_bias = self.alibi_slopes.unsqueeze(-1) * alibi_bias  # Shape: (nheads, T)
                 alibi_bias = alibi_bias.unsqueeze(-1)  # Shape: (nheads, T, 1)
-                alibi_bias = alibi_bias.unsqueeze(0).expand(att.size(0), -1, -1, -1)  # Expand to shape (batch_size, nheads, T, T)
+                alibi_bias = alibi_bias.unsqueeze(0).expand(att.size(0), -1, -1, -1)  # Expand to shape (batch_size, nheads, T, 1)
                 att = att + alibi_bias
 
             att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))

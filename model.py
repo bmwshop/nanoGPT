@@ -83,7 +83,7 @@ class CausalSelfAttention(nn.Module):
         if self.config.pe == 'rope':
             # this call expects shape [seq_length, ..., dim]
             rotary_pos_emb = self.rotary_pos_emb(q.shape[-2]) # T
-            freqs = self.rotary_pos_emb(q.shape[-1]) # hs
+            freqs = rotary_pos_emb(q.shape[-1]) # hs
             q = apply_rotary_pos_emb(q, freqs)
             k = apply_rotary_pos_emb(k, freqs)
             # q, k = self.rotary_emb.forward(self.positions, q, k)

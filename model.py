@@ -111,7 +111,7 @@ class CausalSelfAttention(nn.Module):
                 # self.alibi_slopes: # shape: (nheads,)
                 alibi_bias = self.alibi_slopes.unsqueeze(-1) * alibi_bias  # Shape: (nheads, T)
                 alibi_bias = alibi_bias.unsqueeze(-1)  # Shape: (nheads, T, 1)
-                alibi_bias = alibi_bias.unsqueeze(0).expand_as(att.size(0), -1, -1, -1)  # Expand to shape (batch_size, nheads, T, T)
+                alibi_bias = alibi_bias.unsqueeze(0).expand(att.size(0), -1, -1, -1)  # Expand to shape (batch_size, nheads, T, T)
                 att = att + alibi_bias
 
             att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))

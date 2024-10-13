@@ -338,6 +338,7 @@ while True:
 
     # termination conditions
     if iter_num > max_iters:
+        logging.info(f'training done. best_val_loss: {best_val_loss}')
         break
 
 if ddp:

@@ -62,7 +62,7 @@ class CausalSelfAttention(nn.Module):
             self.alibi_slopes = build_slopes(
                 num_attention_heads=config.n_head,
                 num_attention_heads_alibi=config.n_head, # it is a useful options to have not to rotate all alibi dims
-            ).squeeze().float()
+            ).squeeze().float() # shape: (nheads,)
 
             # self.alibi = ALiBiRelativePositionEmbedding()
 
@@ -105,6 +105,12 @@ class CausalSelfAttention(nn.Module):
         else:
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+            if self.config.pe == 'alibi':
+                alibi_bias = torch.arange(T).unsqueeze(0)  # Shape: (1, T)
+                alibi_bias = self.alibi_slopes.unsqueeze(-1) * alibi_bias  # Shape: (nheads, T)
+                alibi_bias = alibi_bias.unsqueeze(0).expand_as(att)  # Expand to shape (batch_size, nheads, T, T)
+                att = att + alibi_bias
+
             att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)

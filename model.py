@@ -106,7 +106,7 @@ class CausalSelfAttention(nn.Module):
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             if self.config.pe == 'alibi':
-                alibi_bias = torch.arange(T).unsqueeze(0)  # Shape: (1, T)
+                alibi_bias = torch.arange(T, device=att.device).unsqueeze(0)  # Shape: (1, T)
                 alibi_bias = self.alibi_slopes.unsqueeze(-1) * alibi_bias  # Shape: (nheads, T)
                 alibi_bias = alibi_bias.unsqueeze(0).expand_as(att)  # Expand to shape (batch_size, nheads, T, T)
                 att = att + alibi_bias

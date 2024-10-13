@@ -14,13 +14,11 @@ def _rotate_half(x):
     return torch.cat((-x2, x1), dim=-1)
 
 class RotaryEmbedding(nn.Module):
-# class RotaryEmbedding():
 
     def __init__(
         self,
         dim: int,
         rotary_base: int = 10000,
-        # max_seq_len: int = 4096,
     ):
         """
         Args:
@@ -30,23 +28,8 @@ class RotaryEmbedding(nn.Module):
         """
         super().__init__()
         self.rotary_base = rotary_base
-        # self.max_seq_len = max_seq_len
         inv_freq = 1.0 / (self.rotary_base ** (torch.arange(0, dim, 2).float() / dim))
-        # self.inv_freq = inv_freq.to('cuda')
-
         self.register_buffer('inv_freq', inv_freq)
-
-        # seq = torch.arange(self.max_seq_len, device=self.inv_freq.device)
-        # seq = seq.type_as(self.inv_freq)
-
-        # freqs = einsum('i , j -> i j', seq, self.inv_freq)
-        # # first part even vector components, second part odd vector components,
-        # #  2 * dim in dimension size
-        # emb = torch.cat((freqs, freqs), dim=-1)
-        # # emb [seq_length, .., dim]
-        # # self.freqs = rearrange(emb, 'n d -> n 1 1 d')
-        # self.freqs = rearrange(emb, 'n d -> 1 1 n d')
-        # # self.freqs = emb
 
     def forward(self, max_seq_len):
         seq = torch.arange(max_seq_len, device=self.inv_freq.device)
@@ -58,7 +41,8 @@ class RotaryEmbedding(nn.Module):
         emb = torch.cat((freqs, freqs), dim=-1)
         # emb [seq_length, .., dim]
         # return rearrange(emb, 'n d -> n 1 1 d')
-        return emb
+        return rearrange(emb, 'n d -> 1 1 n d')
+        # return emb
 
 def apply_rotary_pos_emb(t, freqs):
     # def apply(self, t):

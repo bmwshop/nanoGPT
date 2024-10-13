@@ -41,7 +41,6 @@ class RotaryEmbedding(nn.Module):
         emb = torch.cat((freqs, freqs), dim=-1)
         # emb [seq_length, .., dim]
         # return rearrange(emb, 'n d -> n 1 1 d')
-        # return rearrange(emb, 'n d -> 1 1 n d')
         return emb
 
 def apply_rotary_pos_emb(t, freqs):

@@ -15,7 +15,6 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-# from rope import SimpleRotaryEmbedding
 from rotary_position_embedding import RotaryEmbedding, apply_rotary_pos_emb
 import logging
 
@@ -82,11 +81,9 @@ class CausalSelfAttention(nn.Module):
 
         if self.config.pe == 'rope':
             # this call expects shape [seq_length, ..., dim]
-            # rotary_pos_emb = self.rotary_pos_emb(q.shape[-2]) # T
             freqs = self.rotary_pos_emb(q.shape[-2]) # hs
             q = apply_rotary_pos_emb(q, freqs)
             k = apply_rotary_pos_emb(k, freqs)
-            # q, k = self.rotary_emb.forward(self.positions, q, k)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:

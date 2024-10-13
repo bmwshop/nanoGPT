@@ -17,6 +17,7 @@ from torch.nn import functional as F
 
 from rotary_position_embedding import RotaryEmbedding, apply_rotary_pos_emb
 from alibi_relative_position_embedding import ALiBiRelativePositionEmbedding, build_slopes
+from flash_attn import flash_attn_func
 import logging
 
 class LayerNorm(nn.Module):

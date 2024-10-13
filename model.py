@@ -56,7 +56,7 @@ class CausalSelfAttention(nn.Module):
             logging.info(f'initializing rope with base {rope_base}')
             # self.rotary_emb = SimpleRotaryEmbedding(head_size, head_size, max_position, base = rope_base, dtype = rope_dtype)
             # self.positions = torch.arange(0, max_position)
-            self.rotary_pos_emb = RotaryEmbedding(head_size, rotary_base = rope_base, max_seq_len = config.block_size)
+            self.rotary_pos_emb = RotaryEmbedding(head_size, rotary_base = rope_base)
 
         if config.flash:
             # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0

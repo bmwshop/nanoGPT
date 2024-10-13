@@ -186,7 +186,7 @@ class GPT(nn.Module):
         self.transformer['h'] = nn.ModuleList([Block(config) for _ in range(config.n_layer)])
         self.transformer['ln_f'] = LayerNorm(config.n_embd, bias=config.bias)
 
-        assert self.config.pe in {'abs', 'rope', 'alibi', 'nope'}, f"Invalid value for pe: {self.config.pe}"
+        assert self.config.pe in {'abs', 'rope', 'alibi', 'nope', 'xpos2'}, f"Invalid value for pe: {self.config.pe}"
 
         if self.config.pe == 'abs':
             logging.info(f'using wpe')

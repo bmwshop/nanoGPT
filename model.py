@@ -103,7 +103,6 @@ class CausalSelfAttention(nn.Module):
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             if self.config.pe == 'alibi':
                 # D.R. do we keep the * (1.0 / math.sqrt(k.size(-1))) from the above or not?
-                att = att * math.sqrt(k.size(-1))
                 alibi_bias = torch.arange(T, device=att.device).unsqueeze(0)  # Shape: (1, T)
                 # self.alibi_slopes: # shape: (nheads,)
                 alibi_bias = self.alibi_slopes.unsqueeze(-1) * alibi_bias  # Shape: (nheads, T)

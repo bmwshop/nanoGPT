@@ -16,6 +16,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 from rotary_position_embedding import RotaryEmbedding, apply_rotary_pos_emb
+from alibi_relative_position_embedding import ALiBiRelativePositionEmbedding, build_slopes
 import logging
 
 class LayerNorm(nn.Module):
@@ -46,16 +47,23 @@ class CausalSelfAttention(nn.Module):
         self.dropout = config.dropout
         self.config = config
 
+        self.alibi_slopes = None
+
         if config.pe == 'rope':
             head_size = self.n_embd // self.n_head
             # max_position = config.block_size
             # let's just hardcode it here for now
             rope_dtype = torch.bfloat16
             rope_base = config.rope_base
-            logging.info(f'initializing rope with base {rope_base}')
-            # self.rotary_emb = SimpleRotaryEmbedding(head_size, head_size, max_position, base = rope_base, dtype = rope_dtype)
-            # self.positions = torch.arange(0, max_position)
+            logging.debug(f'initializing rope with base {rope_base}')
             self.rotary_pos_emb = RotaryEmbedding(head_size, rotary_base = rope_base)
+        elif config.pe == 'alibi':
+            self.alibi_slopes = build_slopes(
+                num_attention_heads=config.n_head,
+                num_attention_heads_alibi=config.n_head, # it is a useful options to have not to rotate all alibi dims
+            ).squeeze().float()
+
+            # self.alibi = ALiBiRelativePositionEmbedding()
 
         if config.flash:
             # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
@@ -89,6 +97,9 @@ class CausalSelfAttention(nn.Module):
         if self.flash:
             # efficient attention using Flash Attention CUDA kernels
             y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
+
+            y = flash_attn_func(q, k, v, dropout_p=self.dropout if self.training else 0, softmax_scale=None, causal=True,
+                window_size=(-1, -1), alibi_slopes=self.alibi_slopes, deterministic=False):
         else:
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))

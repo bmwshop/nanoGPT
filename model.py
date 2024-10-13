@@ -106,9 +106,12 @@ class CausalSelfAttention(nn.Module):
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             if self.config.pe == 'alibi':
+                # D.R. do we keep the * (1.0 / math.sqrt(k.size(-1))) from the above or not?
                 alibi_bias = torch.arange(T, device=att.device).unsqueeze(0)  # Shape: (1, T)
+                # self.alibi_slopes: # shape: (nheads,)
                 alibi_bias = self.alibi_slopes.unsqueeze(-1) * alibi_bias  # Shape: (nheads, T)
-                alibi_bias = alibi_bias.unsqueeze(0).expand_as(att)  # Expand to shape (batch_size, nheads, T, T)
+                alibi_bias = alibi_bias.unsqueeze(-1)  # Shape: (nheads, T, 1)
+                alibi_bias = alibi_bias.unsqueeze(0).expand_as(att.size(0), -1, -1, -1)  # Expand to shape (batch_size, nheads, T, T)
                 att = att + alibi_bias
 
             att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))

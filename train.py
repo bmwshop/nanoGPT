@@ -30,8 +30,6 @@ from torch.distributed import init_process_group, destroy_process_group
 
 from model import GPTConfig, GPT
 
-logging.basicConfig(level=logging.DEBUG)
-
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
@@ -79,12 +77,15 @@ compile = True # use PyTorch 2.0 to compile the model to be faster
 # Dima
 pe = 'abs' # examples: 'abs', 'rope', 'alibi', 'nope'
 flash = True # examples: 'True', 'False'
+loglevel = 'info'
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
 
+loglevel = {'debug': logging.DEBUG, 'warning': logging.WARNING, 'info': logging.INFO, 'error': logging.ERROR, 'critical': logging.CRITICAL}[loglevel]
+logging.basicConfig(level=loglevel)
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
 if ddp:

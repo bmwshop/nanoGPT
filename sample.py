@@ -9,8 +9,6 @@ import tiktoken
 import logging
 from model import GPTConfig, GPT
 
-logging.basicConfig(level=logging.INFO)
-
 # -----------------------------------------------------------------------------
 init_from = 'resume' # either 'resume' (from an out_dir) or a gpt2 variant (e.g. 'gpt2-xl')
 out_dir = 'out' # ignored if init_from is not 'resume'
@@ -27,8 +25,12 @@ compile = False # use PyTorch 2.0 to compile the model to be faster
 # Dima
 pe = 'abs' # examples: 'abs', 'rope', 'alibi', 'nope'
 flash = True # examples: 'True', 'False'
+loglevel = 'info'
 exec(open('configurator.py').read()) # overrides from command line or config file
 # -----------------------------------------------------------------------------
+
+loglevel = {'debug': logging.DEBUG, 'warning': logging.WARNING, 'info': logging.INFO, 'error': logging.ERROR, 'critical': logging.CRITICAL}[loglevel]
+logging.basicConfig(level=loglevel)
 
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)

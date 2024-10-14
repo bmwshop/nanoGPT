@@ -41,9 +41,6 @@ rope_base = 10000
 
 precision = 'bfloat16'
 xpos2_decay_base = 2.0
-
-import math
-xpos2_decay_angle = math.pi / 2
+xpos2_decay_angle = 1.570796327 # math.pi / 2
 xpos2_adaptive = True
-
 flash = True

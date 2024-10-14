@@ -45,7 +45,7 @@ class Xpos2Embedding(nn.Module):
             
             finfo = torch.finfo(ptdtype)
             decay_angles = max_pos * self.inv_freq / math.log(finfo.max, self.decay_base)
-            decay_angles = torch.clamp(decay_angles, min = decay_angle).as
+            decay_angles = torch.clamp(decay_angles, min = decay_angle)
             logging.debug(f'adaptive decay angles: {decay_angles}')
         else:
              decay_angles = decay_angle

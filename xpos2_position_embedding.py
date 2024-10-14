@@ -57,6 +57,9 @@ class Xpos2Embedding(nn.Module):
         angles = einsum('i , j -> i j', seq, self.inv_freq)
         # first part even vector components, second part odd vector components,
         #  2 * dim in dimension size
+        logging.debug(f'adaptive decay angles: {self.decay_angle}')
+        logging.debug(f'angles: {angles}')
+        logging.debug(f'self.decay_base: {self.decay_base}')
         scales = self.decay_base**(-angles/self.decay_angle)
         emb = torch.cat((angles, angles), dim=-1)
         emb1 = torch.cat((scales, scales), dim=-1)

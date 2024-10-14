@@ -197,6 +197,8 @@ class GPT(nn.Module):
             self.transformer['wpe'] = nn.Embedding(config.block_size, config.n_embd)
         elif self.config.pe == 'rope':
             logging.info(f'using rope')
+        elif self.config.pe == 'xpos2':
+            logging.info(f'using xpos2')
         elif self.config.pe == 'alibi':
             logging.info(f'using alibi')
         else:

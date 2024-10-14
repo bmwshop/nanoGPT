@@ -39,7 +39,7 @@ class Xpos2Embedding(nn.Module):
         self.register_buffer('inv_freq', inv_freq)
 
         self.decay_base = decay_base
-        ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[precision]
+        self.ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[precision]
         
         if adaptive:
             
@@ -49,7 +49,7 @@ class Xpos2Embedding(nn.Module):
             logging.debug(f'adaptive decay angles: {decay_angles}')
         else:
              decay_angles = decay_angle
-        decay_angles = decay_angles.to(ptdtype)
+        decay_angles = decay_angles.to(self.ptdtype)
         self.register_buffer('decay_angles', decay_angles)
 
     def forward(self, max_seq_len):
@@ -62,7 +62,7 @@ class Xpos2Embedding(nn.Module):
         logging.debug(f'adaptive decay angles: {self.decay_angles}')
         logging.debug(f'angles: {angles}')
         logging.debug(f'self.decay_base: {self.decay_base}')
-        scales = self.decay_base**(-angles/self.decay_angles)
+        scales = self.decay_base**(-angles/self.decay_angles).to(self.ptdtype)
         logging.debug(f'scales: {scales}')
         emb = torch.cat((angles, angles), dim=-1)
         emb1 = torch.cat((scales, scales), dim=-1)

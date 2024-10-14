@@ -56,7 +56,7 @@ class Xpos2Embedding(nn.Module):
         angles = einsum('i , j -> i j', seq, self.inv_freq)
         # first part even vector components, second part odd vector components,
         #  2 * dim in dimension size
-        scales = self.scale_base**(-angles/self.max_angle)
+        scales = self.decay_base**(-angles/self.max_angle)
         emb = torch.cat((angles, angles), dim=-1)
         emb1 = torch.cat((scales, scales), dim=-1)
         # emb [seq_length, .., dim]

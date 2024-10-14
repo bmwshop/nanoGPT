@@ -56,8 +56,9 @@ class CausalSelfAttention(nn.Module):
             logging.debug(f'initializing rope with base {config.rope_base}')
             self.rotary_pos_emb = RotaryEmbedding(head_size, rotary_base = config.rope_base)
         elif config.pe == 'xpos2':
+            max_xpos2_pos = config.block_size* 10 # some buffer
             self.rotary_pos_emb = Xpos2Embedding(head_size, rotary_base = config.rope_base,
-                max_pos = config.block_size, decay_base = config.xpos2_decay_base, decay_angle = config.xpos2_decay_angle, 
+                max_pos = max_xpos2_pos, decay_base = config.xpos2_decay_base, decay_angle = config.xpos2_decay_angle, 
                 precision = config.precision, adaptive = config.xpos2_adaptive)
         elif config.pe == 'alibi':
             self.alibi_slopes = build_slopes(

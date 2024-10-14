@@ -24,7 +24,7 @@ class Xpos2Embedding(nn.Module):
         max_pos: int = 4096,
         decay_base: int = 2,
         decay_angle: float = math.pi / 2,
-        dtype: str = 'bfloat16',
+        precision: str = 'bfloat16',
         adaptive = False,
     ):
         """
@@ -41,7 +41,7 @@ class Xpos2Embedding(nn.Module):
         self.decay_base = decay_base
         
         if adaptive:
-            ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
+            ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[precision]
             finfo = torch.finfo(ptdtype)
             self.decay_angle = max_pos * self.inv_freq / math.log(finfo.max, self.decay_base)
             self.decay_angle = torch.clamp(self.decay_angle, min = decay_angle)

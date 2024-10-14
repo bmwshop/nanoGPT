@@ -58,7 +58,7 @@ class CausalSelfAttention(nn.Module):
         elif config.pe == 'xpos2':
             self.rotary_pos_emb = Xpos2Embedding(head_size, rotary_base = config.rope_base,
                 max_pos = config.block_size, decay_base = config.xpos2_decay_base, decay_angle = config.xpos2_decay_amgle, 
-                dtype = config.dtype, adaptive = config.xpos2_adaptive)
+                precision = config.precision, adaptive = config.xpos2_adaptive)
         elif config.pe == 'alibi':
             self.alibi_slopes = build_slopes(
                 num_attention_heads=config.n_head,
@@ -171,6 +171,10 @@ class GPTConfig:
     pe: str = 'abs' # positional embeddings: 'abs', 'rope', 'alibi', 'nope'
     flash: bool = True # Should we use FA if available?
     rope_base: int = 10000 # rope base
+    xpos2_decay_base: float = 2.0 # decay base
+    xpos2_decay_angle: float = math.pi / 2 # soft max angle
+    xpos2_adaptive: bool = True # should we change decay angle if there's risk of overflow
+    precision: str = 'bfloat16' # precision
 
 class GPT(nn.Module):
 

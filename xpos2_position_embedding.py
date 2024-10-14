@@ -52,7 +52,7 @@ class Xpos2Embedding(nn.Module):
 
     def forward(self, max_seq_len):
         seq = torch.arange(max_seq_len, device=self.inv_freq.device)
-        seq = seq.type_as(self.inv_freq)
+        # seq = seq.type_as(self.inv_freq)
 
         angles = einsum('i , j -> i j', seq, self.inv_freq)
         # first part even vector components, second part odd vector components,

@@ -23,7 +23,7 @@ class Xpos2Embedding(nn.Module):
         rotary_base: int = 10000,
         max_pos: int = 4096,
         decay_base: int = 2,
-        decay_angle: float = math.pi / 2,
+        decay_angle: float = torch.pi / 2,
         precision: str = 'bfloat16',
         adaptive = False,
     ):
@@ -48,6 +48,7 @@ class Xpos2Embedding(nn.Module):
             logging.debug(f'adaptive decay angles: {self.decay_angle}')
         else:
              self.decay_angle = decay_angle
+        self.decay_angle = self.decay_angle.to(device=self.inv_freq.device)
 
     def forward(self, max_seq_len):
         seq = torch.arange(max_seq_len, device=self.inv_freq.device)

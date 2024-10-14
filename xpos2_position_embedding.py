@@ -43,12 +43,12 @@ class Xpos2Embedding(nn.Module):
         if adaptive:
             ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[precision]
             finfo = torch.finfo(ptdtype)
-            self.decay_angle = max_pos * self.inv_freq / math.log(finfo.max, self.decay_base)
-            self.decay_angle = torch.clamp(self.decay_angle, min = decay_angle)
-            logging.debug(f'adaptive decay angles: {self.decay_angle}')
+            decay_angles = max_pos * self.inv_freq / math.log(finfo.max, self.decay_base)
+            decay_angles = torch.clamp(self.decay_angle, min = decay_angle)
+            logging.debug(f'adaptive decay angles: {decay_angles}')
         else:
-             self.decay_angle = decay_angle
-        self.decay_angle = self.decay_angle.to(device=self.inv_freq.device)
+             decay_angles = decay_angle
+        self.register_buffer('decay_angles', decay_angles)
 
     def forward(self, max_seq_len):
         seq = torch.arange(max_seq_len, device=self.inv_freq.device)
@@ -57,7 +57,7 @@ class Xpos2Embedding(nn.Module):
         angles = einsum('i , j -> i j', seq, self.inv_freq)
         # first part even vector components, second part odd vector components,
         #  2 * dim in dimension size
-        logging.debug(f'adaptive decay angles: {self.decay_angle}')
+        logging.debug(f'adaptive decay angles: {self.decay_angles}')
         logging.debug(f'angles: {angles}')
         logging.debug(f'self.decay_base: {self.decay_base}')
         scales = self.decay_base**(-angles/self.decay_angle)

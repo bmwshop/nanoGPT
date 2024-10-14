@@ -62,7 +62,7 @@ class Xpos2Embedding(nn.Module):
         logging.debug(f'adaptive decay angles: {self.decay_angles}')
         logging.debug(f'angles: {angles}')
         logging.debug(f'self.decay_base: {self.decay_base}')
-        scales = self.decay_base**(-angles/self.decay_angles).to(self.ptdtype)
+        scales = (self.decay_base**(-angles/self.decay_angles)).to(self.ptdtype)
         logging.debug(f'scales: {scales}')
         emb = torch.cat((angles, angles), dim=-1)
         emb1 = torch.cat((scales, scales), dim=-1)

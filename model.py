@@ -77,8 +77,10 @@ class CausalSelfAttention(nn.Module):
         if not self.flash:
             logging.warning("Using slow attention. Flash Attention requires PyTorch >= 2.0")
             # causal mask to ensure that attention is only applied to the left in the input sequence
-            self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
-                                        .view(1, 1, config.block_size, config.block_size))
+            ##  self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
+            ##                              .view(1, 1, config.block_size, config.block_size))
+            # D.R. making it just a parameter so that FA checkpoints are compatible with non-FA checkpoints
+            self.bias = torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size)
 
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)

@@ -40,5 +40,6 @@ log_interval = 10
 # weight decay
 weight_decay = 1e-1
 
-pe = 'abs'
+pe = 'rope'
+rope_base = 10000
 flash = True

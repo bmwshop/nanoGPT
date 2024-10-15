@@ -122,6 +122,9 @@ class CausalSelfAttention(nn.Module):
                 alibi_bias = alibi_bias.unsqueeze(0).expand(att.size(0), -1, -1, -1)  # Expand to shape (batch_size, nheads, T, 1)
                 att = att + alibi_bias
 
+
+            if self.bias.device != att.device:
+                self.bias.device = self.bias.device.to(att.device)
             att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)

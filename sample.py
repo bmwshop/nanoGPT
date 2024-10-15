@@ -104,6 +104,6 @@ with torch.no_grad():
             y = model.generate(x, max_new_tokens, temperature=temperature, top_k=top_k)
             out = decode(y[0].tolist())
             logging.info(f'input: {start}') 
-            logging.info(f'output: {out[len(start):]})        
+            logging.info(f'output: {out[len(start):]}')        
             # logging.info(decode(y[0].tolist()))
             logging.info('---------------')

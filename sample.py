@@ -102,5 +102,8 @@ with torch.no_grad():
     with ctx:
         for k in range(num_samples):
             y = model.generate(x, max_new_tokens, temperature=temperature, top_k=top_k)
-            logging.info(decode(y[0].tolist()))
+            out = decode(y[0].tolist())
+            logging.info(f'input: {start}') 
+            logging.info(f'output: {out[len(start):]})        
+            # logging.info(decode(y[0].tolist()))
             logging.info('---------------')

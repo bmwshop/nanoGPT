@@ -124,7 +124,7 @@ class CausalSelfAttention(nn.Module):
 
 
             if self.bias.device != att.device:
-                self.bias.device = self.bias.device.to(att.device)
+                self.bias = self.bias.to(att.device)
             att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)

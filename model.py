@@ -88,8 +88,7 @@ class CausalSelfAttention(nn.Module):
             ##  self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
             ##                              .view(1, 1, config.block_size, config.block_size))
             # D.R. making it just a parameter so that FA checkpoints are compatible with non-FA checkpoints
-            self.bias = torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size,
-                                                                                          config.block_size)
+            self.bias = torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size)
 
     def forward(self, x, collect_info=False):
         B, T, C = x.size()  # Batch size, sequence length, embedding dimensionality (n_embd)

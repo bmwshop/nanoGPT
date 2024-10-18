@@ -99,8 +99,13 @@ if start.startswith('FILE:'):
     with open(start[5:], 'r', encoding='utf-8') as f:
         start = f.read()
 start_ids = encode(start)
-logging.info(f"Length of initial prompt: {len(start_ids)}")
-x = (torch.tensor(start_ids, dtype=torch.long, device=device)[None, ...])
+assert len(start_ids) + max_new_tokens <= model.config.block_size, \
+    f"Model max seq len: {model.config.block_size}, but passed len start_ids: {len(start_ids)} and max_new_tokens: {max_new_tokens}"
+
+logging.info(f"Model max seq len: {model.config.block_size}; seeing len start_ids: {len(start_ids)} and max_new_tokens: {max_new_tokens}")
+# x = (torch.tensor(start_ids, dtype=torch.long, device=device)[None, ...])
+# D.R. don't do weird stuff
+x = torch.tensor(start_ids, dtype=torch.long, device=device).unsqueeze(0)
 
 collect_info = True
 

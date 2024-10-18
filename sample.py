@@ -4,27 +4,30 @@ Sample from a trained model
 import os
 import pickle
 from contextlib import nullcontext
+from fileinput import close
+
 import torch
 import tiktoken
-import logging
 from model import GPTConfig, GPT
+import logging
 
 # -----------------------------------------------------------------------------
 init_from = 'resume' # either 'resume' (from an out_dir) or a gpt2 variant (e.g. 'gpt2-xl')
 out_dir = 'out' # ignored if init_from is not 'resume'
 start = "\n" # or "<|endoftext|>" or etc. Can also specify a file, use as: "FILE:prompt.txt"
-num_samples = 10 # number of samples to draw
-max_new_tokens = 500 # number of tokens generated in each sample
+num_samples = 1 # number of samples to draw
+max_new_tokens = 30 # number of tokens generated in each sample
 temperature = 0.8 # 1.0 = no change, < 1.0 = less random, > 1.0 = more random, in predictions
-top_k = 200 # retain only the top_k most likely tokens, clamp others to have 0 probability
+#top_k = 200 # retain only the top_k most likely tokens, clamp others to have 0 probability
+top_k = 1 # greedy
 seed = 1337
-device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.
+device = 'mps' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32' or 'bfloat16' or 'float16'
 compile = False # use PyTorch 2.0 to compile the model to be faster
 
 # Dima
-pe = 'abs' # examples: 'abs', 'rope', 'alibi', 'nope'
-flash = True # examples: 'True', 'False'
+pe = 'rope' # examples: 'abs', 'rope', 'alibi', 'nope'
+flash = False # examples: 'True', 'False'
 loglevel = 'info'
 exec(open('configurator.py').read()) # overrides from command line or config file
 # -----------------------------------------------------------------------------
@@ -43,11 +46,16 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 # model
 if init_from == 'resume':
     # init from a model saved in a specific directory
-    ckpt_path = os.path.join(out_dir, 'ckpt.pt')
-    checkpoint = torch.load(ckpt_path, map_location=device)
+    #ckpt_path = os.path.join(out_dir, 'ckpt.pt')
+    ckpt_path0 = "baby_rope.pt"
+    #ckpt_path0 = "gpt2-nope.pt"
+    checkpoint = torch.load(ckpt_path0, map_location=device)
     # Dima
-    checkpoint['model_args']['pe'] = pe
+    #checkpoint['model_args']['pe'] = pe
     checkpoint['model_args']['flash'] = flash
+    #checkpoint['model_args']['block_size'] = 4096
+
+    logging.info(f"{pe} {flash}")
 
     gptconf = GPTConfig(**checkpoint['model_args'])
     model = GPT(gptconf)
@@ -56,7 +64,7 @@ if init_from == 'resume':
     for k,v in list(state_dict.items()):
         if k.startswith(unwanted_prefix):
             state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict, strict=False)
 elif init_from.startswith('gpt2'):
     # init from a given GPT-2 model
     model = GPT.from_pretrained(init_from, dict(dropout=0.0))
@@ -91,12 +99,54 @@ if start.startswith('FILE:'):
     with open(start[5:], 'r', encoding='utf-8') as f:
         start = f.read()
 start_ids = encode(start)
+logging.info(f"Length of initial prompt: {len(start_ids)}")
 x = (torch.tensor(start_ids, dtype=torch.long, device=device)[None, ...])
+
+collect_info = True
 
 # run generation
 with torch.no_grad():
     with ctx:
         for k in range(num_samples):
-            y = model.generate(x, max_new_tokens, temperature=temperature, top_k=top_k)
-            logging.info(decode(y[0].tolist()))
-            logging.info('---------------')
+            if collect_info:
+                y, info = model.generate(
+                    x,
+                    max_new_tokens,
+                    temperature=temperature,
+                    top_k=top_k,
+                    collect_info=collect_info
+                )
+                logging.info(decode(y[0].tolist()[-5 - max_new_tokens:]))
+                logging.info('---------------')
+
+                logging.info(len(y[0].tolist()))
+                logging.info(len(info))
+                # should be 1 less since last token doesn't have attention info
+
+                # Decode the main tokens
+                for i in info:
+                    i["decoded_token"] = decode([i["token_id"]])  # Assuming decode returns a list
+
+                # Decode the next_token_probs
+                for i in info:
+                    if "next_token_probs" in i and i["next_token_probs"]:
+                        decoded_next_token_probs = []
+                        for token_id, prob in i["next_token_probs"]:
+                            decoded_token = decode([token_id])  # Decode each token_id
+                            decoded_next_token_probs.append({
+                                "token_id": token_id,
+                                "decoded_token": decoded_token,
+                                "probability": prob
+                            })
+                        i["next_token_probs"] = decoded_next_token_probs
+
+                text = [info[i]["decoded_token"] for i in range(len(info) - 5 - max_new_tokens, len(info))]
+                logging.info(text)
+
+                torch.save(info, ckpt_path0[:-3] + '.info')
+
+                logging.info('---------------')
+            else:
+                y = model.generate(x, max_new_tokens, temperature=temperature, top_k=top_k)
+                logging.info(decode(y[0].tolist()[-5-max_new_tokens:]))
+                logging.info('---------------')

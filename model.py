@@ -18,11 +18,17 @@ from torch.nn import functional as F
 from rotary_position_embedding import RotaryEmbedding, apply_rotary_pos_emb
 from xpos2_position_embedding import Xpos2Embedding, apply_xpos2_emb
 from alibi_relative_position_embedding import build_slopes
-from flash_attn import flash_attn_func
+try:
+    from flash_attn import flash_attn_func
+except ImportError:
+    flash_attn_func = None
 import logging
 
+from tqdm import tqdm
+import heapq
+
 class LayerNorm(nn.Module):
-    """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
+    """LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False"""
 
     def __init__(self, ndim, bias):
         super().__init__()
@@ -37,11 +43,11 @@ class CausalSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
-        # key, query, value projections for all heads, but in a batch
+        # Key, query, value projections for all heads, but in a batch
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
-        # output projection
+        # Output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
-        # regularization
+        # Regularization
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
         self.n_head = config.n_head
@@ -53,82 +59,152 @@ class CausalSelfAttention(nn.Module):
         head_size = self.n_embd // self.n_head
 
         if config.pe == 'rope':
-            logging.debug(f'initializing rope with base {config.rope_base}')
-            self.rotary_pos_emb = RotaryEmbedding(head_size, rotary_base = config.rope_base)
+            logging.debug(f'Initializing RoPE with base {config.rope_base}')
+            self.rotary_pos_emb = RotaryEmbedding(head_size, rotary_base=config.rope_base)
         elif config.pe == 'xpos2':
-            max_xpos2_pos = config.block_size* 10 # some buffer
-            self.rotary_pos_emb = Xpos2Embedding(head_size, rotary_base = config.rope_base,
-                max_pos = max_xpos2_pos, decay_base = config.xpos2_decay_base, decay_angle = config.xpos2_decay_angle, 
-                precision = config.precision, adaptive = config.xpos2_adaptive)
+            max_xpos2_pos = config.block_size * 10  # Some buffer
+            self.rotary_pos_emb = Xpos2Embedding(
+                head_size, rotary_base=config.rope_base,
+                max_pos=max_xpos2_pos, decay_base=config.xpos2_decay_base,
+                decay_angle=config.xpos2_decay_angle,
+                precision=config.precision, adaptive=config.xpos2_adaptive
+            )
         elif config.pe == 'alibi':
             self.alibi_slopes = build_slopes(
                 num_attention_heads=config.n_head,
-                num_attention_heads_alibi=config.n_head, # it is a useful options to have not to rotate all alibi dims
-            ).squeeze().float() # shape: (nheads,)
-
+                num_attention_heads_alibi=config.n_head,  # It is a useful option to have not to rotate all alibi dims
+            ).squeeze().float()  # Shape: (nheads,)
 
         if config.flash:
-            # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
+            # Flash attention makes GPU go brrrr but support is only in PyTorch >= 2.0
             self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
         else:
-            logging.info(f'flash is turned off. gpus will not go brrrr')
+            logging.info('Flash is turned off. GPUs will not go brrrr')
             self.flash = False
 
         if not self.flash:
             logging.warning("Using slow attention. Flash Attention requires PyTorch >= 2.0")
             # causal mask to ensure that attention is only applied to the left in the input sequence
-            self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
-                                        .view(1, 1, config.block_size, config.block_size))
+            ##  self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
+            ##                              .view(1, 1, config.block_size, config.block_size))
+            # D.R. making it just a parameter so that FA checkpoints are compatible with non-FA checkpoints
+            self.bias = torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size,
+                                                                                          config.block_size)
 
-    def forward(self, x):
-        B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
+    def forward(self, x, collect_info=False):
+        B, T, C = x.size()  # Batch size, sequence length, embedding dimensionality (n_embd)
 
-        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
-        q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        # Calculate query, key, values for all heads in batch and move head forward to be the batch dim
+        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
 
         if self.config.pe == 'rope':
-            # this call expects shape [seq_length, ..., dim]
-            angles = self.rotary_pos_emb(q.shape[-2]) # hs
+            # This call expects shape [seq_length, ..., dim]
+            angles = self.rotary_pos_emb(q.shape[-2])  # hs
             q = apply_rotary_pos_emb(q, angles)
             k = apply_rotary_pos_emb(k, angles)
         elif self.config.pe == 'xpos2':
-            # this call expects shape [seq_length, ..., dim]
-            angles, scales = self.rotary_pos_emb(q.shape[-2]) # hs
-            q,k = apply_xpos2_emb(q, k, angles, scales)
+            # This call expects shape [seq_length, ..., dim]
+            angles, scales = self.rotary_pos_emb(q.shape[-2])  # hs
+            q, k = apply_xpos2_emb(q, k, angles, scales)
 
-        # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
+        # Collect norms
+        q_norms = q.norm(dim=-1)  # (B, nh, T)
+        k_norms = k.norm(dim=-1)
+        v_norms = v.norm(dim=-1)
+        embedding_norms = x.norm(dim=-1).unsqueeze(1).expand(-1, self.n_head, -1)  # (B, nh, T)
+
+        # Causal self-attention
         if self.flash:
-            # D.R. originally, nanoGPT uses pytorch's wrapper
-            # y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
-            # D.R. in order to support alibi, we use FA directly
-            y = flash_attn_func(q.transpose(1,2), k.transpose(1,2), v.transpose(1,2), dropout_p=self.dropout if self.training else 0, softmax_scale=None, causal=True,
-                window_size=(-1, -1), alibi_slopes=self.alibi_slopes, deterministic=False)
-            y = y.transpose(1,2)
+            y = flash_attn_func(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
+                                dropout_p=self.dropout if self.training else 0, softmax_scale=None, causal=True,
+                                window_size=(-1, -1), alibi_slopes=self.alibi_slopes, deterministic=False)
+            y = y.transpose(1, 2)
         else:
-            # manual implementation of attention
-            # TODO D.R. this is incorrect i think and needs to be debugged
-            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+            # Manual implementation of attention
+            att_scores = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))  # (B, nh, T, T)
+
             if self.config.pe == 'alibi':
-                # D.R. do we keep the * (1.0 / math.sqrt(k.size(-1))) from the above or not?
-                alibi_bias = torch.arange(T, device=att.device).unsqueeze(0)  # Shape: (1, T)
-                # self.alibi_slopes: # shape: (nheads,)
+                # Implement ALiBi positional bias
+                alibi_bias = torch.arange(T, device=att_scores.device).unsqueeze(0)  # Shape: (1, T)
                 alibi_bias = self.alibi_slopes.unsqueeze(-1) * alibi_bias  # Shape: (nheads, T)
                 alibi_bias = alibi_bias.unsqueeze(-1)  # Shape: (nheads, T, 1)
-                alibi_bias = alibi_bias.unsqueeze(0).expand(att.size(0), -1, -1, -1)  # Expand to shape (batch_size, nheads, T, 1)
-                att = att + alibi_bias
+                alibi_bias = alibi_bias.unsqueeze(0).expand(B, -1, -1, -1)  # Expand to shape (B, nheads, T, 1)
+                att_scores = att_scores + alibi_bias
 
-            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-            att = F.softmax(att, dim=-1)
-            att = self.attn_dropout(att)
-            y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+            if self.bias.device != att_scores.device:
+                self.bias = self.bias.to(att_scores.device)
+            att_scores = att_scores.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
 
-        # output projection
+            att_probs = F.softmax(att_scores, dim=-1)
+            att_probs = self.attn_dropout(att_probs)
+
+            if collect_info:
+                weighted_v = att_probs @ v  # (B, nh, T, hs)
+                weighted_v_norms = weighted_v.norm(dim=-1)  # (B, nh, T)
+
+                # Compute weighted_v_norms excluding top 5 attended tokens
+                effective_top_k = min(5, T)
+                topk_values, topk_indices = torch.topk(att_probs, k=effective_top_k, dim=-1)
+                att_probs_excl_topk = att_probs.clone()
+
+                # Zero out topk attention probabilities
+                att_probs_excl_topk.scatter_(
+                    dim=-1,
+                    index=topk_indices,
+                    value=0.0
+                )
+
+                # Do NOT renormalize the attention probabilities
+                # This ensures the sum of attention probabilities is less than or equal to 1
+
+                # Compute weighted_v excluding topk and its norm
+                weighted_v_excl_topk = att_probs_excl_topk @ v  # (B, nh, T, hs)
+                weighted_v_excl_topk_norms = weighted_v_excl_topk.norm(dim=-1)  # (B, nh, T)
+            else:
+                weighted_v = att_probs @ v  # (B, nh, T, hs)
+                weighted_v_norms = None
+                weighted_v_excl_topk_norms = None
+
+        y = weighted_v.transpose(1, 2).contiguous().view(B, T, C)  # Re-assemble all head outputs side by side
+
+        # Output projection
         y = self.resid_dropout(self.c_proj(y))
-        return y
+
+        extra_info = None
+        if collect_info:
+            # Adjust top_k based on available tokens
+            effective_top_k = min(5, T)
+
+            # Get top_k attention probabilities and indices
+            topk_values_to, topk_indices_to = torch.topk(att_probs, k=effective_top_k, dim=-1)
+
+            # Transpose attention probabilities and apply causal mask
+            att_probs_T = att_probs.transpose(-2, -1)
+            causal_mask_T = self.bias[:, :, :T, :T].transpose(-2, -1)
+            att_probs_T = att_probs_T * causal_mask_T
+
+            topk_values_from, topk_indices_from = torch.topk(att_probs_T, k=effective_top_k, dim=-1)
+
+            extra_info = {
+                'q_norms': q_norms,  # (B, nh, T)
+                'k_norms': k_norms,  # (B, nh, T)
+                'v_norms': v_norms,  # (B, nh, T)
+                'embedding_norms': embedding_norms,  # (B, nh, T)
+                'weighted_v_norms': weighted_v_norms,  # (B, nh, T)
+                'weighted_v_excl_topk_norms': weighted_v_excl_topk_norms,  # (B, nh, T)
+                'topk_indices_to': topk_indices_to,  # (B, nh, T, k)
+                'topk_values_to': topk_values_to,    # (B, nh, T, k)
+                'topk_indices_from': topk_indices_from,  # (B, nh, T, k)
+                'topk_values_from': topk_values_from,    # (B, nh, T, k)
+            }
+
+        if collect_info:
+            return y, extra_info
+        else:
+            return y
 
 class MLP(nn.Module):
 
@@ -155,27 +231,33 @@ class Block(nn.Module):
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
-    def forward(self, x):
-        x = x + self.attn(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x))
-        return x
+    def forward(self, x, collect_info=False):
+        if collect_info:
+            attn_out, attn_info = self.attn(self.ln_1(x), collect_info=collect_info)
+            x = x + attn_out
+            x = x + self.mlp(self.ln_2(x))
+            return x, attn_info
+        else:
+            x = x + self.attn(self.ln_1(x))
+            x = x + self.mlp(self.ln_2(x))
+            return x
 
 @dataclass
 class GPTConfig:
     block_size: int = 1024
-    vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
+    vocab_size: int = 50304  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
     dropout: float = 0.0
-    bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    pe: str = 'abs' # positional embeddings: 'abs', 'rope', 'alibi', 'nope'
-    flash: bool = True # Should we use FA if available?
-    rope_base: int = 10000 # rope base
-    xpos2_decay_base: float = 2.0 # decay base
-    xpos2_decay_angle: float = math.pi / 2 # soft max angle
-    xpos2_adaptive: bool = True # should we change decay angle if there's risk of overflow
-    precision: str = 'bfloat16' # precision
+    bias: bool = True  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    pe: str = 'abs'  # positional embeddings: 'abs', 'rope', 'alibi', 'nope', 'xpos2'
+    flash: bool = False  # Should we use Flash Attention if available?
+    rope_base: int = 10000  # RoPE base
+    xpos2_decay_base: float = 2.0  # Decay base
+    xpos2_decay_angle: float = math.pi / 2  # Soft max angle
+    xpos2_adaptive: bool = True  # Should we change decay angle if there's risk of overflow
+    precision: str = 'bfloat16'  # Precision
 
 class GPT(nn.Module):
 
@@ -194,33 +276,30 @@ class GPT(nn.Module):
         assert self.config.pe in {'abs', 'rope', 'alibi', 'nope', 'xpos2'}, f"Invalid value for pe: {self.config.pe}"
 
         if self.config.pe == 'abs':
-            logging.info(f'using wpe')
+            logging.info('Using absolute positional embeddings (wpe)')
             self.transformer['wpe'] = nn.Embedding(config.block_size, config.n_embd)
         elif self.config.pe == 'rope':
-            logging.info(f'using rope')
+            logging.info('Using RoPE positional embeddings')
         elif self.config.pe == 'xpos2':
-            logging.info(f'using xpos2')
+            logging.info('Using XPOS2 positional embeddings')
         elif self.config.pe == 'alibi':
-            logging.info(f'using alibi')
+            logging.info('Using ALiBi positional embeddings')
         else:
-            logging.info(f'NoPE!')
+            logging.info('No positional embeddings used (NoPE)')
 
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        # with weight tying when using torch.compile() some warnings get generated:
-        # "UserWarning: functional_call was passed multiple values for tied weights.
-        # This behavior is deprecated and will be an error in future versions"
-        # not 100% sure what this is, so far seems to be harmless. TODO investigate
-        self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
+        # Weight tying
+        self.transformer.wte.weight = self.lm_head.weight  # https://paperswithcode.com/method/weight-tying
 
-        # init all weights
+        # Initialize all weights
         self.apply(self._init_weights)
-        # apply special scaled init to the residual projections, per GPT-2 paper
+        # Apply special scaled init to the residual projections, per GPT-2 paper
         for pn, p in self.named_parameters():
             if pn.endswith('c_proj.weight'):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
+                torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer))
 
-        # report number of parameters
-        logging.info("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
+        # Report number of parameters
+        logging.info("Number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
 
     def get_num_params(self, non_embedding=True):
         """
@@ -237,43 +316,68 @@ class GPT(nn.Module):
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
+            if module.bias is not None and hasattr(module.bias, 'data'):
+                module.bias.data.zero_()
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets=None, collect_info=False, collect_probs_per_layer=False):
         device = idx.device
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-        pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
+        pos = torch.arange(0, t, dtype=torch.long, device=device)  # shape (t)
 
-        # forward the GPT model itself
-        tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
+        # Forward the GPT model itself
+        tok_emb = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
         if self.config.pe == 'abs':
-            pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
+            pos_emb = self.transformer.wpe(pos)  # position embeddings of shape (t, n_embd)
             x = self.transformer.drop(tok_emb + pos_emb)
         else:
             x = self.transformer.drop(tok_emb)
-                                      
-        for block in self.transformer.h:
-            x = block(x)
+
+        attn_info_per_layer = [] if collect_info else None
+        logits_per_layer = [] if collect_probs_per_layer else None  # Initialize list to store logits
+
+        for layer_idx, block in enumerate(self.transformer.h):
+            if collect_info:
+                x, attn_info = block(x, collect_info=collect_info)
+                attn_info_per_layer.append(attn_info)
+            else:
+                x = block(x)
+
+            if collect_probs_per_layer:
+                # Compute logits after this layer
+                layer_logits = self.lm_head(x)  # Shape: (b, t, vocab_size)
+                logits_per_layer.append(layer_logits)
+
         x = self.transformer.ln_f(x)
 
+        if collect_probs_per_layer:
+            # Compute final logits
+            final_logits = self.lm_head(x)
+            logits_per_layer.append(final_logits)
+
         if targets is not None:
-            # if we are given some desired targets also calculate the loss
+            # If we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
         else:
-            # inference-time mini-optimization: only forward the lm_head on the very last position
-            logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+            # Inference-time mini-optimization: only forward the lm_head on the very last position
+            logits = self.lm_head(x[:, [-1], :])  # Note: using list [-1] to preserve the time dim
             loss = None
 
-        return logits, loss
+        if collect_info and collect_probs_per_layer:
+            return logits, loss, attn_info_per_layer, logits_per_layer
+        elif collect_info:
+            return logits, loss, attn_info_per_layer
+        elif collect_probs_per_layer:
+            return logits, loss, logits_per_layer
+        else:
+            return logits, loss
 
     def crop_block_size(self, block_size):
-        # model surgery to decrease the block size if necessary
-        # e.g. we may load the GPT2 pretrained model checkpoint (block size 1024)
+        # Model surgery to decrease the block size if necessary
+        # e.g., we may load the GPT2 pretrained model checkpoint (block size 1024)
         # but want to use a smaller block size for some smaller, simpler model
         assert block_size <= self.config.block_size
         self.config.block_size = block_size
@@ -281,7 +385,7 @@ class GPT(nn.Module):
             self.transformer.wpe.weight = nn.Parameter(self.transformer.wpe.weight[:block_size])
         for block in self.transformer.h:
             if hasattr(block.attn, 'bias'):
-                block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]
+                block.attn.bias = block.attn.bias[:, :, :block_size, :block_size]
 
     @classmethod
     def from_pretrained(cls, model_type, override_args=None):
@@ -383,28 +487,291 @@ class GPT(nn.Module):
         return mfu
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None, collect_info=False, collect_probs_per_layer=False):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
-        Most likely you'll want to make sure to be in model.eval() mode of operation for this.
         """
-        for _ in range(max_new_tokens):
-            # if the sequence context is growing too long we must crop it at block_size
-            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
-            # forward the model to get the logits for the index in the sequence
-            logits, _ = self(idx_cond)
-            # pluck the logits at the final step and scale by desired temperature
-            logits = logits[:, -1, :] / temperature
-            # optionally crop the logits to only the top k options
-            if top_k is not None:
-                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                logits[logits < v[:, [-1]]] = -float('Inf')
-            # apply softmax to convert logits to (normalized) probabilities
-            probs = F.softmax(logits, dim=-1)
-            # sample from the distribution
-            idx_next = torch.multinomial(probs, num_samples=1)
-            # append sampled index to the running sequence and continue
-            idx = torch.cat((idx, idx_next), dim=1)
+        generated_info = [] if collect_info else None
+        logits_per_layer_generated = [] if collect_probs_per_layer else None  # Initialize list to store generated logits
 
-        return idx
+        device = idx.device
+        batch_size = idx.size(0)
+        assert batch_size == 1, "This generate function currently supports batch_size=1 only."
+
+        total_seq_length = idx.size(1) + max_new_tokens
+        num_layers = self.config.n_layer
+        num_heads = self.config.n_head  # Exclude aggregated head from per-head calculations
+
+        # Initialize attention_scores for each token
+        attention_scores = [
+            {
+                'top_tokens_attending_to': [
+                    [{} for _ in range(num_heads)]  # For each layer, list of dicts for each head
+                    for _ in range(num_layers)
+                ]
+            }
+            for _ in range(total_seq_length)
+        ]
+
+        # Initialize token norms
+        token_norms = []
+
+        idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
+        seq_len = idx_cond.size(1)
+        initial_context_length = seq_len  # The length of the initial context
+
+        # Collect info for initial context
+        if collect_info or collect_probs_per_layer:
+            outputs = self(idx_cond, collect_info=collect_info, collect_probs_per_layer=collect_probs_per_layer)
+            if collect_info and collect_probs_per_layer:
+                logits, _, attn_info_per_layer, logits_per_layer = outputs
+            elif collect_info:
+                logits, _, attn_info_per_layer = outputs
+            elif collect_probs_per_layer:
+                logits, _, logits_per_layer = outputs
+        elif collect_info:
+            logits, _, attn_info_per_layer = self(idx_cond, collect_info=collect_info)
+        elif collect_probs_per_layer:
+            logits, _, logits_per_layer = self(idx_cond, collect_probs_per_layer=collect_probs_per_layer)
+        else:
+            logits, _ = self(idx_cond)
+
+        if collect_probs_per_layer:
+            logits_per_layer_generated.extend(logits_per_layer)
+
+        if collect_info and collect_probs_per_layer:
+            attn_info = attn_info_per_layer
+        elif collect_info:
+            attn_info = attn_info_per_layer
+        else:
+            attn_info = None
+
+        if collect_info:
+            for i in range(seq_len):
+                token_id = idx_cond[0, i].item()
+                #decoded_token = self.tokenizer.decode([token_id])
+                token_info = {
+                    'token_id': token_id,
+                    'decoded_token': None,
+                    'is_initial_context': True,
+                    'attn_info_per_layer': []
+                }
+                token_norm = {
+                    'q_norms': [],
+                    'k_norms': [],
+                    'v_norms': []
+                }
+
+                for layer_idx, layer_attn_info in enumerate(attn_info_per_layer):
+                    layer_token_info = {}
+                    for key in [
+                        'q_norms', 'k_norms', 'v_norms', 'embedding_norms',
+                        'weighted_v_norms', 'weighted_v_excl_topk_norms',
+                        'topk_indices_to', 'topk_values_to', 'topk_indices_from', 'topk_values_from'
+                    ]:
+                        tensor = layer_attn_info[key]
+                        if tensor is not None:
+                            layer_token_info[key] = tensor[0, :, i]  # (nh, ...) or (nh, k)
+                        else:
+                            layer_token_info[key] = None
+                    token_info['attn_info_per_layer'].append(layer_token_info)
+
+                    # Store norms
+                    token_norm['q_norms'].append(layer_attn_info['q_norms'][0, :, i])  # (nh,)
+                    token_norm['k_norms'].append(layer_attn_info['k_norms'][0, :, i])
+                    token_norm['v_norms'].append(layer_attn_info['v_norms'][0, :, i])
+
+                    # Initialize top_tokens_attending_to for tokens in the initial context
+                    # Collect top K future tokens within initial context that attend to this token
+                    topk_indices_from = layer_attn_info['topk_indices_from'][0, :, i]  # (nh, k)
+                    topk_values_from = layer_attn_info['topk_values_from'][0, :, i]  # (nh, k)
+                    for head_idx in range(num_heads):
+                        top_tokens_dict = {}
+                        for idx_from, attn_score in zip(topk_indices_from[head_idx], topk_values_from[head_idx]):
+                            idx_from = int(idx_from)
+                            if idx_from <= i or idx_from >= seq_len:
+                                continue  # Only consider future tokens within initial context
+                            attention_score = attn_score.item()
+                            if idx_from in top_tokens_dict:
+                                top_tokens_dict[idx_from] += attention_score
+                            else:
+                                top_tokens_dict[idx_from] = attention_score
+                        # Keep top K tokens
+                        top_k_tokens = heapq.nlargest(5, top_tokens_dict.items(), key=lambda x: x[1])
+                        attention_scores[i]['top_tokens_attending_to'][layer_idx][head_idx] = top_k_tokens
+
+                token_norms.append(token_norm)
+                generated_info.append(token_info)
+
+        # Start generating new tokens
+        for t in tqdm(range(max_new_tokens), desc="Generating tokens"):
+            idx_cond = idx[:, -self.config.block_size:] if idx.size(1) > self.config.block_size else idx
+            if collect_info or collect_probs_per_layer:
+                outputs = self(idx_cond, collect_info=collect_info, collect_probs_per_layer=collect_probs_per_layer)
+                if collect_info and collect_probs_per_layer:
+                    logits, _, attn_info_per_layer, logits_per_layer = outputs
+                elif collect_info:
+                    logits, _, attn_info_per_layer = outputs
+                elif collect_probs_per_layer:
+                    logits, _, logits_per_layer = outputs
+            elif collect_info:
+                logits, _, attn_info_per_layer = self(idx_cond, collect_info=collect_info)
+            elif collect_probs_per_layer:
+                logits, _, logits_per_layer = self(idx_cond, collect_probs_per_layer=collect_probs_per_layer)
+            else:
+                logits, _ = self(idx_cond)
+
+            if collect_probs_per_layer:
+                logits_per_layer_generated.extend(logits_per_layer)
+
+            logits = logits[:, -1, :] / temperature  # Shape: (1, vocab_size)
+
+            probs = F.softmax(logits, dim=-1)  # Shape: (1, vocab_size)
+            # get probs before top k
+
+            if top_k is not None:
+                current_top_k = min(top_k, logits.size(-1))
+                v, _ = torch.topk(logits, k=current_top_k)
+                logits[logits < v[:, [-1]]] = -float('inf')
+
+            # Extract top 10 next token probabilities before top k
+            top_probs, top_indices = torch.topk(probs, k=10, dim=-1)
+            next_token_probs = [(int(idx.item()), float(prob.item())) for idx, prob in
+                                zip(top_indices[0], top_probs[0])]
+
+            #if collect_info and len(generated_info) > 0:
+            #    # Assign next_token_probs to the last token's info (fixing the off-by-one error)
+            #    generated_info[-1]['next_token_probs'] = next_token_probs
+
+            if top_k is not None:
+                current_top_k = min(top_k, logits.size(-1))
+                v, _ = torch.topk(logits, k=current_top_k)
+                logits[logits < v[:, [-1]]] = -float('inf')
+
+            probs = F.softmax(logits, dim=-1)  # Shape: (1, vocab_size)
+
+            # Sample the next token
+            idx_next = torch.multinomial(probs, num_samples=1)  # Shape: (1, 1)
+            idx = torch.cat((idx, idx_next), dim=1)  # Append to sequence
+
+            if collect_info or collect_probs_per_layer:
+                outputs = self(idx_cond, collect_info=collect_info, collect_probs_per_layer=collect_probs_per_layer)
+                if collect_info and collect_probs_per_layer:
+                    logits_new, _, attn_info_per_layer_new, logits_per_layer_new = outputs
+                elif collect_info:
+                    logits_new, _, attn_info_per_layer_new = outputs
+                elif collect_probs_per_layer:
+                    logits_new, _, logits_per_layer_new = outputs
+            elif collect_info:
+                logits_new, _, attn_info_per_layer_new = self(idx_cond, collect_info=collect_info)
+            elif collect_probs_per_layer:
+                logits_new, _, logits_per_layer_new = self(idx_cond, collect_probs_per_layer=collect_probs_per_layer)
+            else:
+                logits_new, _ = self(idx_cond)
+
+            if collect_probs_per_layer:
+                logits_per_layer_generated.extend(logits_per_layer_new)
+
+            if collect_info:
+                token_id = idx[:, -2].item()
+                #decoded_token = self.tokenizer.decode([token_id])
+                token_info = {
+                    'token_id': token_id,
+                    'decoded_token': None,
+                    'is_initial_context': t == 0,
+                    'attn_info_per_layer': [],
+                    'next_token_probs': next_token_probs
+                }
+                current_token_idx = idx.size(1) - 1 - 1  # (t > 0)
+                token_norm = {
+                    'q_norms': [],
+                    'k_norms': [],
+                    'v_norms': []
+                }
+
+                for layer_idx, layer_attn_info in enumerate(attn_info_per_layer_new):
+                    layer_token_info = {}
+                    for key in [
+                        'q_norms', 'k_norms', 'v_norms', 'embedding_norms',
+                        'weighted_v_norms', 'weighted_v_excl_topk_norms',
+                        'topk_indices_to', 'topk_values_to', 'topk_indices_from', 'topk_values_from'
+                    ]:
+                        tensor = layer_attn_info[key]
+                        if tensor is not None:
+                            layer_token_info[key] = tensor[0, :, -1]  # (nh, ...) or (nh, k)
+                        else:
+                            layer_token_info[key] = None
+                    token_info['attn_info_per_layer'].append(layer_token_info)
+
+                    # Store norms
+                    token_norm['q_norms'].append(layer_attn_info['q_norms'][0, :, -1])  # (nh,)
+                    token_norm['k_norms'].append(layer_attn_info['k_norms'][0, :, -1])
+                    token_norm['v_norms'].append(layer_attn_info['v_norms'][0, :, -1])
+
+                    # Update attention_scores for tokens attended to by the new token
+                    topk_indices = layer_attn_info['topk_indices_to'][0, :, -1]  # (nh, k)
+                    topk_values = layer_attn_info['topk_values_to'][0, :, -1]  # (nh, k)
+
+                    for head_idx in range(num_heads):
+                        for idx_token, attn_score in zip(topk_indices[head_idx], topk_values[head_idx]):
+                            target_idx = int(idx_token.item())
+                            if target_idx >= idx.size(1) - 1:
+                                continue  # Ignore if index is out of range
+
+                            attention_score = attn_score.item()
+
+                            # Update top tokens attending to the target token
+                            top_tokens_dict = dict(
+                                attention_scores[target_idx]['top_tokens_attending_to'][layer_idx][head_idx]
+                            )
+
+                            if current_token_idx in top_tokens_dict:
+                                top_tokens_dict[current_token_idx] += attention_score
+                            else:
+                                top_tokens_dict[current_token_idx] = attention_score
+
+                            # Keep top K tokens
+                            top_k_tokens = heapq.nlargest(5, top_tokens_dict.items(), key=lambda x: x[1])
+                            attention_scores[target_idx]['top_tokens_attending_to'][layer_idx][head_idx] = top_k_tokens
+
+                if t > 0:
+                    token_norms.append(token_norm)
+                    generated_info.append(token_info)
+                else:
+                    # Update initial context token info
+                    token_norms[-1] = token_norm
+                    generated_info[-1] = token_info
+
+        if collect_info:
+            # Include initial context length in the generated_info
+            generated_info[0]['initial_context_length'] = initial_context_length
+            # Include attention_scores and token_norms in the generated_info
+            for idx_info, info in enumerate(generated_info):
+                info['attention_scores'] = attention_scores[idx_info]
+                info['token_norms'] = token_norms[idx_info]
+
+            # Compute total attention falling on each token per layer and head
+            for idx_info, info in enumerate(generated_info):
+                total_attention_per_layer_head = []
+                for layer_idx in range(num_layers):
+                    layer_total_attention = []
+                    for head_idx in range(num_heads):
+                        total_attention = sum(
+                            score for idx_from, score in
+                            info['attention_scores']['top_tokens_attending_to'][layer_idx][head_idx]
+                        )
+                        layer_total_attention.append(total_attention)
+                    total_attention_per_layer_head.append(layer_total_attention)
+                info['total_attention_per_layer_head'] = total_attention_per_layer_head
+
+            if collect_probs_per_layer:
+                return idx, generated_info, logits_per_layer_generated
+            else:
+                return idx, generated_info
+        else:
+            if collect_probs_per_layer:
+                return idx, logits_per_layer_generated
+            else:
+                return idx
+

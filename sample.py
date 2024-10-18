@@ -21,7 +21,7 @@ temperature = 0.8 # 1.0 = no change, < 1.0 = less random, > 1.0 = more random, i
 #top_k = 200 # retain only the top_k most likely tokens, clamp others to have 0 probability
 top_k = 1 # greedy
 seed = 1337
-device = 'mps' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.
+device = 'cuda' if torch.cuda.is_available() else 'mps'
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32' or 'bfloat16' or 'float16'
 compile = False # use PyTorch 2.0 to compile the model to be faster
 
@@ -46,14 +46,11 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 # model
 if init_from == 'resume':
     # init from a model saved in a specific directory
-    #ckpt_path = os.path.join(out_dir, 'ckpt.pt')
-    ckpt_path0 = "baby_rope.pt"
-    #ckpt_path0 = "gpt2-nope.pt"
-    checkpoint = torch.load(ckpt_path0, map_location=device)
+    ckpt_path = "baby_rope.pt"
+    checkpoint = torch.load(ckpt_path, map_location=device)
     # Dima
     #checkpoint['model_args']['pe'] = pe
     checkpoint['model_args']['flash'] = flash
-    #checkpoint['model_args']['block_size'] = 4096
 
     logging.info(f"{pe} {flash}")
 
@@ -103,11 +100,9 @@ assert len(start_ids) + max_new_tokens <= model.config.block_size, \
     f"Model max seq len: {model.config.block_size}, but passed len start_ids: {len(start_ids)} and max_new_tokens: {max_new_tokens}"
 
 logging.info(f"Model max seq len: {model.config.block_size}; seeing len start_ids: {len(start_ids)} and max_new_tokens: {max_new_tokens}")
-# x = (torch.tensor(start_ids, dtype=torch.long, device=device)[None, ...])
-# D.R. don't do weird stuff
 x = torch.tensor(start_ids, dtype=torch.long, device=device).unsqueeze(0)
 
-collect_info = True
+collect_info = False
 
 # run generation
 with torch.no_grad():
@@ -121,12 +116,17 @@ with torch.no_grad():
                     top_k=top_k,
                     collect_info=collect_info
                 )
-                logging.info(decode(y[0].tolist()[-5 - max_new_tokens:]))
-                logging.info('---------------')
+                out = decode(y[0].tolist())
 
-                logging.info(len(y[0].tolist()))
-                logging.info(len(info))
+                #logging.info(len(y[0].tolist()))
+                #logging.info(len(info))
                 # should be 1 less since last token doesn't have attention info
+
+                logging.info(f'input: "{start}"')
+                logging.info(f'input end: "{out[len(start) - 100:len(start)]}"')
+                logging.info(f'output: "{out[len(start):]}"')
+
+
 
                 # Decode the main tokens
                 for i in info:
@@ -146,12 +146,14 @@ with torch.no_grad():
                         i["next_token_probs"] = decoded_next_token_probs
 
                 text = [info[i]["decoded_token"] for i in range(len(info) - 5 - max_new_tokens, len(info))]
-                logging.info(text)
 
-                torch.save(info, ckpt_path0[:-3] + '.info')
+                torch.save(info, ckpt_path[:-3] + '.info')
 
                 logging.info('---------------')
             else:
                 y = model.generate(x, max_new_tokens, temperature=temperature, top_k=top_k)
-                logging.info(decode(y[0].tolist()[-5-max_new_tokens:]))
+                out = decode(y[0].tolist())
+                logging.info(f'input: "{start}"')
+                logging.info(f'input end: "{out[len(start)-100:len(start)]}"')
+                logging.info(f'output: "{out[len(start):]}"')
                 logging.info('---------------')

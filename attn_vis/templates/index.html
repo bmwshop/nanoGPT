@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Attention Visualization</title>
+    <!-- Include Bootstrap CSS -->
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css">
+
+    <style>
+        body {
+            overflow-x: hidden;
+            margin: 0; /* Remove default margin */
+            padding: 0; /* Remove default padding */
+            height: 100vh; /* Ensure body takes full viewport height */
+        }
+        #token-list {
+            font-size: 1.5em;
+            white-space: normal;
+            word-wrap: break-word;
+            overflow-y: auto; /* Enable vertical scrolling if content overflows */
+            height: 100vh; /* Make token list take full viewport height */
+        }
+        .token {
+            display: inline-block;
+            margin: 2px;
+            padding: 5px 8px;
+            cursor: pointer;
+            border-bottom: 1px dotted #ccc;
+            transition: background-color 0.3s, opacity 0.3s, transform 0.3s;
+            min-width: 30px;
+            text-align: center;
+        }
+        .token:hover {
+            background-color: #e0e0e0;
+            transform: scale(1.3);
+        }
+        .selected-token {
+            background-color: #d0d0ff !important;
+        }
+        .attended-to {
+            background-color: rgba(255, 255, 0, var(--attention-opacity, 0.7)); /* Increased minimum opacity */
+        }
+        .attending-from {
+            background-color: rgba(0, 255, 255, var(--attention-opacity, 0.7)); /* Increased minimum opacity */
+        }
+        .both-attention {
+            background-color: rgba(255, 165, 0, var(--attention-opacity, 0.7)); /* Increased minimum opacity */
+        }
+        .context-token {
+            opacity: 0.5;
+            display: inline-block;
+            min-width: 30px;
+            text-align: center;
+        }
+        .center-token {
+            font-weight: bold;
+            display: inline-block;
+            min-width: 30px;
+            text-align: center;
+        }
+        .selected-in-context {
+            background-color: #ffcccc;
+            display: inline-block;
+            min-width: 30px;
+            text-align: center;
+        }
+        #info-panel {
+            position: fixed; /* Fix the position relative to the viewport */
+            top: 0; /* Align to the top */
+            right: 0; /* Align to the right */
+            width: 30%; /* Set width to 30% of the viewport */
+            height: 100vh; /* Full viewport height */
+            overflow-y: auto; /* Enable vertical scrolling if content overflows */
+            background-color: #f8f9fa; /* Light background for contrast */
+            border-left: 1px solid #ccc; /* Subtle border for separation */
+            padding: 20px; /* Add some padding for content spacing */
+            box-sizing: border-box; /* Include padding and border in the element's total width and height */
+        }
+        .generated-token {
+            color: rgba(255, 0, 255, 0.6);
+        }
+    </style>
+
+</head>
+<body>
+<div class="container-fluid">
+    <h1 class="mt-4">Attention Visualization</h1>
+    <div class="row">
+        <div class="col-md-8">
+            <div id="token-list">
+                {% for token in tokens %}
+                <span class="token {% if token.is_generated %}generated-token{% endif %}" data-index="{{ token.index }}" id="token-{{ token.index }}">{{ token.decoded_token }}</span>
+                {% endfor %}
+            </div>
+        </div>
+        <div class="col-md-4" id="info-panel">
+            <h3>Token Information</h3>
+            <p><strong>Selected Token:</strong> <span id="selected-token-text"></span></p>
+            <div id="selected-token-context"></div>
+            <div class="form-group">
+                <label for="layer-select">Select Layer:</label>
+                <select class="form-control" id="layer-select">
+                    {% for i in range(num_layers) %}
+                    <option value="{{ i }}">Layer {{ i }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="head-select">Select Head:</label>
+                <select class="form-control" id="head-select">
+                    {% for i in range(num_heads) %}
+                    <option value="{{ i }}">Head {{ i }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <h4>Selected Token Info:</h4>
+            <p>Embedding Norm: <span id="selected-embedding-norm"></span></p>
+            <p>Q Norm: <span id="selected-q-norm"></span></p>
+            <p>K Norm: <span id="selected-k-norm"></span></p>
+            <p>V Norm: <span id="selected-v-norm"></span></p>
+            <p>Total Attention on Token: <span id="total-attention-on-token"></span></p>
+            <p>Attention-weighted V Sum Norm: <span id="weighted-v-norm"></span></p>
+            <p>Attention-weighted V Sum Norm (Excl. Top 5): <span id="weighted-v-excl-topk-norm"></span></p>
+            <h4>Top Tokens Attended to by This Token:</h4>
+            <ol id="top-tokens-to-list"></ol>
+            <h4>Top Tokens Attending to This Token:</h4>
+            <ol id="top-tokens-from-list"></ol>
+
+            <!-- New Section for Top 10 Next Token Probabilities -->
+            <h4>Top 10 Next Token Probabilities:</h4>
+            <ol id="next-token-probs-list"></ol>
+        </div>
+    </div>
+</div>
+<!-- Include jQuery and Bootstrap JS -->
+<script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
+<script>
+    $(document).ready(function() {
+        let currentHead = 0; // Initialize current head index
+
+        // Function to update head selection
+        function updateHeadSelection(newHead) {
+            $('#head-select').val(newHead);
+            updateTokenInfo();
+        }
+
+        // Event listener for keydown events for heads
+        $(document).keydown(function(e) {
+            // Check if focus is not on an input or textarea to prevent interfering with user typing
+            if ($(e.target).is('input, textarea')) {
+                return;
+            }
+
+            // Cycle to next head when 'H' is pressed
+            if (e.key === 'h' || e.key === 'H') {
+                if (e.shiftKey) {
+                    // Shift + H: Cycle to previous head
+                    currentHead = (currentHead - 1 + $('#head-select option').length) % $('#head-select option').length;
+                } else {
+                    // H: Cycle to next head
+                    currentHead = (currentHead + 1) % $('#head-select option').length;
+                }
+                updateHeadSelection(currentHead);
+                e.preventDefault(); // Prevent default action
+            }
+
+            // Cycle through layers when 'L' is pressed
+            if (e.key === 'l' || e.key === 'L') {
+                if (e.shiftKey) {
+                    // Shift + L: Cycle to previous layer
+                    currentLayer = (currentLayer - 1 + $('#layer-select option').length) % $('#layer-select option').length;
+                } else {
+                    // L: Cycle to next layer
+                    currentLayer = (currentLayer + 1) % $('#layer-select option').length;
+                }
+                updateLayerSelection(currentLayer);
+                e.preventDefault(); // Prevent default action
+            }
+
+            // Add these conditionals within the existing keydown event listener
+            if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'n') {
+                // Move to next token
+                if (selectedTokenIndex < $('.token').length - 1) {
+                    selectedTokenIndex += 1;
+                } else {
+                    selectedTokenIndex = 0; // Wrap around to first token
+                }
+                $('.token').removeClass('selected-token');
+                $(`#token-${selectedTokenIndex}`).addClass('selected-token');
+                updateTokenInfo();
+                // Scroll the selected token into view smoothly and center it
+                $(`#token-${selectedTokenIndex}`)[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+                e.preventDefault(); // Prevent default action
+            }
+
+            if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'p') {
+                // Move to previous token
+                if (selectedTokenIndex > 0) {
+                    selectedTokenIndex -= 1;
+                } else {
+                    selectedTokenIndex = $('.token').length - 1; // Wrap around to last token
+                }
+                $('.token').removeClass('selected-token');
+                $(`#token-${selectedTokenIndex}`).addClass('selected-token');
+                updateTokenInfo();
+                // Scroll the selected token into view smoothly and center it
+                $(`#token-${selectedTokenIndex}`)[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+                e.preventDefault(); // Prevent default action
+            }
+        });
+
+        let currentLayer = 0; // Initialize current layer index
+
+        // Function to update layer selection
+        function updateLayerSelection(newLayer) {
+            $('#layer-select').val(newLayer);
+            updateTokenInfo();
+        }
+
+        let selectedTokenIndex = null;
+
+        // Handle token click
+        $('.token').click(function() {
+            // Reset all tokens to neutral state
+            $('.token').removeClass('selected-token attended-to attending-from both-attention');
+            $('.token').css('background-color', '');
+
+            selectedTokenIndex = $(this).data('index');
+            $(this).addClass('selected-token');
+            updateTokenInfo();
+        });
+
+        $('#layer-select, #head-select').change(function() {
+            if (selectedTokenIndex !== null) {
+                updateTokenInfo();
+            }
+        });
+
+        function updateTokenInfo() {
+            const selectedLayer = $('#layer-select').val();
+            const selectedHead = $('#head-select').val();
+            $.post('/get_token_info', {
+                token_index: selectedTokenIndex,
+                selected_layer: selectedLayer,
+                selected_head: selectedHead
+            }, function(data) {
+                // Update selected token text
+                $('#selected-token-text').text(data.selected_token_text);
+
+                // Display context tokens for selected token
+                let contextHtml = buildContextHtml(data.selected_token_context);
+                $('#selected-token-context').html(contextHtml);
+
+                // Update selected token norms
+                $('#selected-embedding-norm').text(data.selected_embedding_norm.toFixed(4));
+                $('#selected-q-norm').text(data.selected_q_norm.toFixed(4));
+                $('#selected-k-norm').text(data.selected_k_norm.toFixed(4));
+                $('#selected-v-norm').text(data.selected_v_norm.toFixed(4));
+                $('#weighted-v-norm').text(data.weighted_v_norm.toFixed(4));
+                $('#weighted-v-excl-topk-norm').text(data.weighted_v_excl_topk_norm.toFixed(4));
+                $('#total-attention-on-token').text(data.total_attention_on_selected.toFixed(4));
+
+                // Update top tokens attended to
+                $('#top-tokens-to-list').empty();
+                for (let i = 0; i < data.topk_tokens_to.length; i++) {
+                    let tokenInfo = data.topk_tokens_to[i];
+                    let tokenIndex = tokenInfo.token_index;
+                    let tokenText = tokenInfo.decoded_token; // Use decoded_token directly
+                    let attentionScore = data.topk_scores_to[i].toFixed(4);
+                    let distance = data.topk_distances_to[i];
+                    let kNorm = data.topk_k_norms_to[i].toFixed(4);
+                    let vNorm = data.topk_v_norms_to[i].toFixed(4);
+                    let contextHtml = buildContextHtml(tokenInfo.context_tokens);
+
+                    $('#top-tokens-to-list').append(`<li>
+                        <strong>Token:</strong> ${tokenText} (Attention Score: ${attentionScore}, Relative position: ${distance}, K Norm: ${kNorm}, V Norm: ${vNorm})
+                        <br>Context (this token in bold, selected token in red):<br>${contextHtml}
+                    </li><hr>`);
+                }
+
+                // Update top tokens attending from
+                $('#top-tokens-from-list').empty();
+                if (data.topk_tokens_from.length === 0) {
+                    $('#top-tokens-from-list').append('<li>No tokens attend to this token.</li>');
+                } else {
+                    for (let i = 0; i < data.topk_tokens_from.length; i++) {
+                        let tokenInfo = data.topk_tokens_from[i];
+                        let tokenIndex = tokenInfo.token_index;
+                        let tokenText = tokenInfo.decoded_token; // Use decoded_token directly
+                        let attentionScore = data.topk_scores_from[i].toFixed(4);
+                        let distance = data.topk_distances_from[i];
+                        let qNorm = data.topk_q_norms_from[i].toFixed(4);
+                        let contextHtml = buildContextHtml(tokenInfo.context_tokens);
+
+                        $('#top-tokens-from-list').append(`<li>
+                            <strong>Token:</strong> ${tokenText} (Attention Score: ${attentionScore}, Relative position: ${distance}, Q Norm: ${qNorm})
+                            <br>Context (this token in bold, selected token in red):<br>${contextHtml}
+                        </li><hr>`);
+                    }
+                }
+
+                // Update Top 10 Next Token Probabilities
+                $('#next-token-probs-list').empty();
+                data.next_token_probs.forEach(function(prob_info) {
+                    let token_text = prob_info.decoded_token; // Use decoded_token directly
+                    let probability = (prob_info.probability * 100).toFixed(2); // Convert to percentage
+                    $('#next-token-probs-list').append(`<li><strong>${token_text}</strong>: ${probability}%</li>`);
+                });
+
+                // Highlight tokens in main display
+                highlightTokens(data.attention_from_selected, data.attention_to_selected, data.total_attention_per_token);
+            });
+        }
+
+        function buildContextHtml(contextTokens) {
+            let html = '';
+            contextTokens.forEach(ctxt => {
+                let tokenText = ctxt.token.trim() ? ctxt.token : ' ';
+                if (ctxt.is_selected) {
+                    html += `<span class="selected-in-context">${tokenText}</span> `;
+                } else if (ctxt.is_center) {
+                    html += `<span class="center-token">${tokenText}</span> `;
+                } else {
+                    html += `<span class="context-token">${tokenText}</span> `;
+                }
+            });
+            return html.trim();
+        }
+
+        function highlightTokens(attention_from_selected, attention_to_selected, total_attention_per_token) {
+            // Find maximum total attention to normalize opacity
+            let maxTotalAttention = Math.max(...total_attention_per_token);
+
+            $('.token').each(function() {
+                let index = $(this).data('index');
+                let attnFromScore = attention_from_selected[index];
+                let attnToScore = attention_to_selected[index];
+                let totalAttention = total_attention_per_token[index];
+
+                $(this).removeClass('attended-to attending-from both-attention');
+                $(this).css('--attention-opacity', Math.max(attnFromScore, attnToScore));
+
+                // Adjust text opacity based on total attention with a higher minimum value
+                let opacity = (totalAttention / maxTotalAttention) * 0.7 + 0.3; // Ensures opacity is between 0.3 and 1.0
+                opacity = Math.min(Math.max(opacity, 0.5), 1.0); // Clamp opacity between 0.5 and 1.0
+                $(this).css('opacity', opacity);
+
+                if (attnFromScore > 0 && attnToScore > 0) {
+                    $(this).addClass('both-attention');
+                } else if (attnFromScore > 0) {
+                    $(this).addClass('attended-to');
+                } else if (attnToScore > 0) {
+                    $(this).addClass('attending-from');
+                }
+            });
+        }
+
+        // Initial setup
+        $('#layer-select').val(0);
+        $('#head-select').val(0);
+        selectedTokenIndex = 0;
+        $(`#token-${selectedTokenIndex}`).addClass('selected-token');
+        updateTokenInfo();
+
+        // Hover effects
+        $('.token').hover(
+            function() {
+                if (!$(this).hasClass('selected-token') && !$(this).hasClass('attended-to') && !$(this).hasClass('attending-from') && !$(this).hasClass('both-attention')) {
+                    $(this).css('background-color', '#e0e0e0');
+                }
+            },
+            function() {
+                if (!$(this).hasClass('selected-token') && !$(this).hasClass('attended-to') && !$(this).hasClass('attending-from') && !$(this).hasClass('both-attention')) {
+                    $(this).css('background-color', '');
+                }
+            }
+        );
+    });
+</script>
+</body>
+</html>

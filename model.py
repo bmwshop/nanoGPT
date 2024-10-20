@@ -360,15 +360,22 @@ class GPT(nn.Module):
 
             if collect_probs_per_layer:
                 # Compute logits after this layer
-                layer_logits = self.lm_head(x)  # Shape: (b, t, vocab_size)
+                x0 = self.transformer.ln_f(x)
+                if targets is not None:
+                    layer_logits = self.lm_head(x0)  # Shape: (b, t, vocab_size)
+                else:
+                    layer_logits = self.lm_head(x0[:, [-1], :])  # Shape: (b, 1, vocab_size)
                 logits_per_layer.append(layer_logits)
 
         x = self.transformer.ln_f(x)  # Shape: (b, t, n_embd)
 
-        if collect_probs_per_layer:
+        """if collect_probs_per_layer:
             # Compute final logits
-            final_logits = self.lm_head(x)  # Shape: (b, t, vocab_size)
-            logits_per_layer.append(final_logits)
+            if targets is not None:
+                final_logits = self.lm_head(x)  # Shape: (b, t, vocab_size)
+            else:
+                final_logits = self.lm_head(x[:, [-1], :])  # Shape: (b, 1, vocab_size)
+            logits_per_layer.append(final_logits)"""
 
         if targets is not None:
             # If we are given some desired targets also calculate the loss
@@ -560,14 +567,14 @@ class GPT(nn.Module):
 
             # Normalize embeddings
             # hidden_states shape: (1, t, n_embd)
-            hidden_states_norm = hidden_states[0] / hidden_states[0].norm(dim=-1, keepdim=True)  # Shape: (t, n_embd)
+            """hidden_states_norm = hidden_states[0] / hidden_states[0].norm(dim=-1, keepdim=True)  # Shape: (t, n_embd)
             embedding_weight_norm = self.lm_head.weight / self.lm_head.weight.norm(dim=-1,
                                                                                    keepdim=True)  # Shape: (vocab_size, n_embd)
             # Compute cosine similarities
             cos_similarities = torch.matmul(hidden_states_norm, embedding_weight_norm.T)  # Shape: (t, vocab_size)
             # For each token, get top 10 most similar tokens
             top_k_similar = 10
-            topk_sim_values, topk_sim_indices = torch.topk(cos_similarities, k=top_k_similar, dim=-1)  # Shape: (t, k)
+            topk_sim_values, topk_sim_indices = torch.topk(cos_similarities, k=top_k_similar, dim=-1)  # Shape: (t, k)"""
 
             # Initialize token_norms
             token_norms = [{'q_norms': [], 'k_norms': [], 'v_norms': []} for _ in range(seq_len)]
@@ -598,20 +605,20 @@ class GPT(nn.Module):
                     'most_similar_tokens': [],
                     'next_token_probs_per_layer': [],  # Initialize per-layer next token probabilities
                 }
-                # Get most similar tokens
+                """# Get most similar tokens
                 sim_token_ids = topk_sim_indices[i].tolist()
                 sim_token_sims = topk_sim_values[i].tolist()
                 # Decode similar tokens individually
                 sim_decoded_tokens = []
                 for sim_tid in sim_token_ids:
                     sim_decoded_token = decode([sim_tid]) if decode else None
-                    sim_decoded_tokens.append(sim_decoded_token)
+                    sim_decoded_tokens.append(sim_decoded_token)"""
 
-                most_similar_tokens = [
-                    {'token_id': tid, 'decoded_token': dtok, 'similarity': sim}
-                    for tid, dtok, sim in zip(sim_token_ids, sim_decoded_tokens, sim_token_sims)
-                ]
-                token_info['most_similar_tokens'] = most_similar_tokens
+                #most_similar_tokens = [
+                #    {'token_id': tid, 'decoded_token': dtok, 'similarity': sim}
+                #    for tid, dtok, sim in zip(sim_token_ids, sim_decoded_tokens, sim_token_sims)
+                #]
+                #token_info['most_similar_tokens'] = most_similar_tokens
 
                 for layer_idx, layer_attn_info in enumerate(attn_info_per_layer):
                     layer_token_info = {}
@@ -650,6 +657,31 @@ class GPT(nn.Module):
 
                 generated_info.append(token_info)
 
+        if collect_info and collect_probs_per_layer:
+            # Compute 'next_token_probs_per_layer' for the last token of initial context
+            last_token_idx = seq_len - 1
+            token_info = generated_info[last_token_idx]  # Get the token_info for the last token
+            # Collect next token probabilities per layer
+            next_token_probs_per_layer = []
+            for layer_logits in logits_per_layer:
+                #print(layer_logits.shape)
+                layer_logits = layer_logits[:, -1, :]  # Shape: (1, vocab_size)
+                layer_probs = F.softmax(layer_logits, dim=-1)
+                # Extract top 10 next token probabilities
+                top_probs, top_indices = torch.topk(layer_probs, k=10, dim=-1)  # Shape: (1, k)
+                next_token_probs_layer = []
+                for idx_token, prob in zip(top_indices[0], top_probs[0]):
+                    token_id = int(idx_token.item())
+                    probability = float(prob.item())
+                    decoded_token = decode([token_id]) if decode else None
+                    next_token_probs_layer.append({
+                        'token_id': token_id,
+                        'decoded_token': decoded_token,
+                        'probability': probability
+                    })
+                next_token_probs_per_layer.append(next_token_probs_layer)
+            token_info['next_token_probs_per_layer'] = next_token_probs_per_layer
+
         # Start generating new tokens
         for t in tqdm(range(max_new_tokens), desc="Generating tokens"):
             idx_cond = idx[:, -self.config.block_size:] if idx.size(1) > self.config.block_size else idx
@@ -669,19 +701,12 @@ class GPT(nn.Module):
 
             logits = logits[:, -1, :] / temperature  # Shape: (1, vocab_size)
 
-            # Apply temperature and top_k to logits per layer
             if collect_info and collect_probs_per_layer:
                 # Collect next token probabilities per layer
                 next_token_probs_per_layer = []
                 for layer_logits in logits_per_layer:
-                    layer_logits = layer_logits[:, -1, :] / temperature  # Shape: (1, vocab_size)
+                    layer_logits = layer_logits[:, -1, :]  # Shape: (1, vocab_size)
                     layer_probs = F.softmax(layer_logits, dim=-1)
-
-                    if top_k is not None:
-                        current_top_k = min(top_k, layer_logits.size(-1))
-                        v, _ = torch.topk(layer_logits, k=current_top_k)
-                        layer_logits[layer_logits < v[:, [-1]]] = -float('inf')
-                        layer_probs = F.softmax(layer_logits, dim=-1)
 
                     # Extract top 10 next token probabilities
                     top_probs, top_indices = torch.topk(layer_probs, k=10, dim=-1)  # Shape: (1, k)

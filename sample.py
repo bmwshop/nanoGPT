@@ -128,7 +128,7 @@ with torch.no_grad():
 
 
 
-                # Decode the main tokens
+                """# Decode the main tokens
                 for i in info:
                     i["decoded_token"] = decode([i["token_id"]])  # Assuming decode returns a list
 
@@ -145,7 +145,7 @@ with torch.no_grad():
                             })
                         i["next_token_probs"] = decoded_next_token_probs
 
-                text = [info[i]["decoded_token"] for i in range(len(info) - 5 - max_new_tokens, len(info))]
+                text = [info[i]["decoded_token"] for i in range(len(info) - 5 - max_new_tokens, len(info))]"""
 
                 torch.save(info, ckpt_path[:-3] + '.info')
 

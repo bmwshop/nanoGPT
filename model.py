@@ -93,27 +93,40 @@ class CausalSelfAttention(nn.Module):
     def forward(self, x, collect_info=False):
         B, T, C = x.size()  # Batch size, sequence length, embedding dimensionality (n_embd)
 
-        # Calculate query, key, values for all heads in batch and move head forward to be the batch dim
+        # Calculate query, key, values for all heads and move head forward to be the batch dim
         q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # Shape: (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # Shape: (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # Shape: (B, nh, T, hs)
 
         if self.config.pe == 'rope':
             # This call expects shape [seq_length, ..., dim]
-            angles = self.rotary_pos_emb(q.shape[-2])  # hs
+            angles = self.rotary_pos_emb(q.shape[-2])  # Shape: (T, hs)
             q = apply_rotary_pos_emb(q, angles)
             k = apply_rotary_pos_emb(k, angles)
         elif self.config.pe == 'xpos2':
             # This call expects shape [seq_length, ..., dim]
-            angles, scales = self.rotary_pos_emb(q.shape[-2])  # hs
+            angles, scales = self.rotary_pos_emb(q.shape[-2])  # Shape: (T, hs)
             q, k = apply_xpos2_emb(q, k, angles, scales)
 
+        # Scaling the query vectors based on position indices
+        if self.training and self.config.scaling_target_sequence_length is not None:
+            a = float(self.config.block_size)  # Training sequence length
+            b = float(self.config.scaling_target_sequence_length)  # Target sequence length
+            T = q.size(2)  # Current sequence length
+            if T > 1:
+                i = torch.arange(T, device=q.device, dtype=q.dtype).unsqueeze(0)  # Shape: (1, T)
+                scaling_factor = 1 + ((a / b) - 1) * (i / (T - 1))  # Shape: (1, T)
+                scaling_factor = scaling_factor.view(1, 1, T, 1)  # Reshape for broadcasting to (1, 1, T, 1)
+            else:
+                scaling_factor = torch.tensor(1.0, device=q.device, dtype=q.dtype).view(1, 1, 1, 1)
+            q = q * scaling_factor
+
         # Collect norms
-        q_norms = q.norm(dim=-1)  # (B, nh, T)
-        k_norms = k.norm(dim=-1)
-        v_norms = v.norm(dim=-1)
-        embedding_norms = x.norm(dim=-1).unsqueeze(1).expand(-1, self.n_head, -1)  # (B, nh, T)
+        q_norms = q.norm(dim=-1)  # Shape: (B, nh, T)
+        k_norms = k.norm(dim=-1)  # Shape: (B, nh, T)
+        v_norms = v.norm(dim=-1)  # Shape: (B, nh, T)
+        embedding_norms = x.norm(dim=-1).unsqueeze(1).expand(-1, self.n_head, -1)  # Shape: (B, nh, T)
 
         # Causal self-attention
         if self.flash:
@@ -123,26 +136,26 @@ class CausalSelfAttention(nn.Module):
             y = y.transpose(1, 2)
         else:
             # Manual implementation of attention
-            att_scores = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))  # (B, nh, T, T)
+            att_scores = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))  # Shape: (B, nh, T, T)
 
             if self.config.pe == 'alibi':
                 # Implement ALiBi positional bias
                 alibi_bias = torch.arange(T, device=att_scores.device).unsqueeze(0)  # Shape: (1, T)
-                alibi_bias = self.alibi_slopes.unsqueeze(-1) * alibi_bias  # Shape: (nheads, T)
-                alibi_bias = alibi_bias.unsqueeze(-1)  # Shape: (nheads, T, 1)
-                alibi_bias = alibi_bias.unsqueeze(0).expand(B, -1, -1, -1)  # Expand to shape (B, nheads, T, 1)
+                alibi_bias = self.alibi_slopes.unsqueeze(-1) * alibi_bias  # Shape: (nh, T)
+                alibi_bias = alibi_bias.unsqueeze(-1)  # Shape: (nh, T, 1)
+                alibi_bias = alibi_bias.unsqueeze(0).expand(B, -1, -1, -1)  # Shape: (B, nh, T, 1)
                 att_scores = att_scores + alibi_bias
 
             if self.bias.device != att_scores.device:
                 self.bias = self.bias.to(att_scores.device)
             att_scores = att_scores.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
 
-            att_probs = F.softmax(att_scores, dim=-1)
+            att_probs = F.softmax(att_scores, dim=-1)  # Shape: (B, nh, T, T)
             att_probs = self.attn_dropout(att_probs)
 
             if collect_info:
-                weighted_v = att_probs @ v  # (B, nh, T, hs)
-                weighted_v_norms = weighted_v.norm(dim=-1)  # (B, nh, T)
+                weighted_v = att_probs @ v  # Shape: (B, nh, T, hs)
+                weighted_v_norms = weighted_v.norm(dim=-1)  # Shape: (B, nh, T)
 
                 # Compute weighted_v_norms excluding top 5 attended tokens
                 effective_top_k = min(5, T)
@@ -160,10 +173,10 @@ class CausalSelfAttention(nn.Module):
                 # This ensures the sum of attention probabilities is less than or equal to 1
 
                 # Compute weighted_v excluding topk and its norm
-                weighted_v_excl_topk = att_probs_excl_topk @ v  # (B, nh, T, hs)
-                weighted_v_excl_topk_norms = weighted_v_excl_topk.norm(dim=-1)  # (B, nh, T)
+                weighted_v_excl_topk = att_probs_excl_topk @ v  # Shape: (B, nh, T, hs)
+                weighted_v_excl_topk_norms = weighted_v_excl_topk.norm(dim=-1)  # Shape: (B, nh, T)
             else:
-                weighted_v = att_probs @ v  # (B, nh, T, hs)
+                weighted_v = att_probs @ v  # Shape: (B, nh, T, hs)
                 weighted_v_norms = None
                 weighted_v_excl_topk_norms = None
 
@@ -178,26 +191,26 @@ class CausalSelfAttention(nn.Module):
             effective_top_k = min(5, T)
 
             # Get top_k attention probabilities and indices
-            topk_values_to, topk_indices_to = torch.topk(att_probs, k=effective_top_k, dim=-1)
+            topk_values_to, topk_indices_to = torch.topk(att_probs, k=effective_top_k, dim=-1)  # Shape: (B, nh, T, k)
 
             # Transpose attention probabilities and apply causal mask
-            att_probs_T = att_probs.transpose(-2, -1)
+            att_probs_T = att_probs.transpose(-2, -1)  # Shape: (B, nh, T, T)
             causal_mask_T = self.bias[:, :, :T, :T].transpose(-2, -1)
             att_probs_T = att_probs_T * causal_mask_T
 
-            topk_values_from, topk_indices_from = torch.topk(att_probs_T, k=effective_top_k, dim=-1)
+            topk_values_from, topk_indices_from = torch.topk(att_probs_T, k=effective_top_k, dim=-1)  # Shape: (B, nh, T, k)
 
             extra_info = {
-                'q_norms': q_norms,  # (B, nh, T)
-                'k_norms': k_norms,  # (B, nh, T)
-                'v_norms': v_norms,  # (B, nh, T)
-                'embedding_norms': embedding_norms,  # (B, nh, T)
-                'weighted_v_norms': weighted_v_norms,  # (B, nh, T)
-                'weighted_v_excl_topk_norms': weighted_v_excl_topk_norms,  # (B, nh, T)
-                'topk_indices_to': topk_indices_to,  # (B, nh, T, k)
-                'topk_values_to': topk_values_to,    # (B, nh, T, k)
-                'topk_indices_from': topk_indices_from,  # (B, nh, T, k)
-                'topk_values_from': topk_values_from,    # (B, nh, T, k)
+                'q_norms': q_norms,  # Shape: (B, nh, T)
+                'k_norms': k_norms,  # Shape: (B, nh, T)
+                'v_norms': v_norms,  # Shape: (B, nh, T)
+                'embedding_norms': embedding_norms,  # Shape: (B, nh, T)
+                'weighted_v_norms': weighted_v_norms,  # Shape: (B, nh, T)
+                'weighted_v_excl_topk_norms': weighted_v_excl_topk_norms,  # Shape: (B, nh, T)
+                'topk_indices_to': topk_indices_to,  # Shape: (B, nh, T, k)
+                'topk_values_to': topk_values_to,    # Shape: (B, nh, T, k)
+                'topk_indices_from': topk_indices_from,  # Shape: (B, nh, T, k)
+                'topk_values_from': topk_values_from,    # Shape: (B, nh, T, k)
             }
 
         if collect_info:
@@ -257,6 +270,7 @@ class GPTConfig:
     xpos2_decay_angle: float = math.pi / 2  # Soft max angle
     xpos2_adaptive: bool = True  # Should we change decay angle if there's risk of overflow
     precision: str = 'bfloat16'  # Precision
+    scaling_target_sequence_length: int = None  # Target sequence length for scaling during training
 
 class GPT(nn.Module):
 
@@ -324,15 +338,15 @@ class GPT(nn.Module):
         device = idx.device
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-        pos = torch.arange(0, t, dtype=torch.long, device=device)  # shape (t)
+        pos = torch.arange(0, t, dtype=torch.long, device=device)  # Shape: (t)
 
         # Forward the GPT model itself
-        tok_emb = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
+        tok_emb = self.transformer.wte(idx)  # Shape: (b, t, n_embd)
         if self.config.pe == 'abs':
-            pos_emb = self.transformer.wpe(pos)  # position embeddings of shape (t, n_embd)
-            x = self.transformer.drop(tok_emb + pos_emb)
+            pos_emb = self.transformer.wpe(pos)  # Shape: (t, n_embd)
+            x = self.transformer.drop(tok_emb + pos_emb)  # Shape: (b, t, n_embd)
         else:
-            x = self.transformer.drop(tok_emb)
+            x = self.transformer.drop(tok_emb)  # Shape: (b, t, n_embd)
 
         attn_info_per_layer = [] if collect_info else None
         logits_per_layer = [] if collect_probs_per_layer else None  # Initialize list to store logits
@@ -349,26 +363,26 @@ class GPT(nn.Module):
                 layer_logits = self.lm_head(x)  # Shape: (b, t, vocab_size)
                 logits_per_layer.append(layer_logits)
 
-        x = self.transformer.ln_f(x)
+        x = self.transformer.ln_f(x)  # Shape: (b, t, n_embd)
 
         if collect_probs_per_layer:
             # Compute final logits
-            final_logits = self.lm_head(x)
+            final_logits = self.lm_head(x)  # Shape: (b, t, vocab_size)
             logits_per_layer.append(final_logits)
 
         if targets is not None:
             # If we are given some desired targets also calculate the loss
-            logits = self.lm_head(x)
+            logits = self.lm_head(x)  # Shape: (b, t, vocab_size)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
         else:
             # Inference-time mini-optimization: only forward the lm_head on the very last position
-            logits = self.lm_head(x[:, [-1], :])  # Note: using list [-1] to preserve the time dim
+            logits = self.lm_head(x[:, [-1], :])  # Shape: (b, 1, vocab_size)
             loss = None
 
         if collect_info and collect_probs_per_layer:
-            return logits, loss, attn_info_per_layer, logits_per_layer
+            return logits, loss, attn_info_per_layer, logits_per_layer, x
         elif collect_info:
-            return logits, loss, attn_info_per_layer
+            return logits, loss, attn_info_per_layer, x
         elif collect_probs_per_layer:
             return logits, loss, logits_per_layer
         else:
@@ -486,7 +500,8 @@ class GPT(nn.Module):
         return mfu
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None, collect_info=False, collect_probs_per_layer=False):
+    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None, collect_info=False,
+                 collect_probs_per_layer=False, decode=None):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
@@ -524,43 +539,79 @@ class GPT(nn.Module):
         if collect_info or collect_probs_per_layer:
             outputs = self(idx_cond, collect_info=collect_info, collect_probs_per_layer=collect_probs_per_layer)
             if collect_info and collect_probs_per_layer:
-                logits, _, attn_info_per_layer, logits_per_layer = outputs
+                logits, _, attn_info_per_layer, logits_per_layer, hidden_states = outputs
             elif collect_info:
-                logits, _, attn_info_per_layer = outputs
+                logits, _, attn_info_per_layer, hidden_states = outputs
             elif collect_probs_per_layer:
                 logits, _, logits_per_layer = outputs
-        elif collect_info:
-            logits, _, attn_info_per_layer = self(idx_cond, collect_info=collect_info)
-        elif collect_probs_per_layer:
-            logits, _, logits_per_layer = self(idx_cond, collect_probs_per_layer=collect_probs_per_layer)
         else:
             logits, _ = self(idx_cond)
 
         if collect_probs_per_layer:
             logits_per_layer_generated.extend(logits_per_layer)
 
-        if collect_info and collect_probs_per_layer:
-            attn_info = attn_info_per_layer
-        elif collect_info:
-            attn_info = attn_info_per_layer
-        else:
-            attn_info = None
-
         if collect_info:
-            for i in range(seq_len):
-                token_id = idx_cond[0, i].item()
-                #decoded_token = self.tokenizer.decode([token_id])
+            # Decode tokens individually
+            token_ids = idx_cond[0].tolist()  # List of token IDs in the initial context
+            decoded_tokens = []
+            for token_id in token_ids:
+                decoded_token = decode([token_id]) if decode else None
+                decoded_tokens.append(decoded_token)
+
+            # Normalize embeddings
+            # hidden_states shape: (1, t, n_embd)
+            hidden_states_norm = hidden_states[0] / hidden_states[0].norm(dim=-1, keepdim=True)  # Shape: (t, n_embd)
+            embedding_weight_norm = self.lm_head.weight / self.lm_head.weight.norm(dim=-1,
+                                                                                   keepdim=True)  # Shape: (vocab_size, n_embd)
+            # Compute cosine similarities
+            cos_similarities = torch.matmul(hidden_states_norm, embedding_weight_norm.T)  # Shape: (t, vocab_size)
+            # For each token, get top 10 most similar tokens
+            top_k_similar = 10
+            topk_sim_values, topk_sim_indices = torch.topk(cos_similarities, k=top_k_similar, dim=-1)  # Shape: (t, k)
+
+            # Initialize token_norms
+            token_norms = [{'q_norms': [], 'k_norms': [], 'v_norms': []} for _ in range(seq_len)]
+
+            # Collect norms and attention info
+            for layer_idx, layer_attn_info in enumerate(attn_info_per_layer):
+                # Collect norms
+                q_norms = layer_attn_info['q_norms'][0]  # Shape: (nh, T)
+                k_norms = layer_attn_info['k_norms'][0]
+                v_norms = layer_attn_info['v_norms'][0]
+
+                for i in range(seq_len):
+                    token_norms[i]['q_norms'].append(q_norms[:, i])  # Shape: (nh,)
+                    token_norms[i]['k_norms'].append(k_norms[:, i])
+                    token_norms[i]['v_norms'].append(v_norms[:, i])
+
+            # Collect token info
+            for i in tqdm(range(seq_len)):
+                token_id = token_ids[i]
+                decoded_token = decoded_tokens[i]
+                decoded_token = decoded_token if decoded_token else None
+
                 token_info = {
                     'token_id': token_id,
-                    'decoded_token': None,
+                    'decoded_token': decoded_token,
                     'is_initial_context': True,
-                    'attn_info_per_layer': []
+                    'attn_info_per_layer': [],
+                    'most_similar_tokens': [],
+                    'next_token_probs_per_layer': [],  # Initialize per-layer next token probabilities
                 }
-                token_norm = {
-                    'q_norms': [],
-                    'k_norms': [],
-                    'v_norms': []
-                }
+                # Get most similar tokens
+                sim_token_ids = topk_sim_indices[i].tolist()
+                sim_token_sims = topk_sim_values[i].tolist()
+                # Decode similar tokens individually
+                sim_decoded_tokens = []
+                for sim_tid in sim_token_ids:
+                    sim_decoded_token = decode([sim_tid]) if decode else None
+                    sim_decoded_tokens.append(sim_decoded_token)
+
+                most_similar_tokens = [
+                    {'token_id': tid, 'decoded_token': dtok, 'similarity': sim}
+                    for tid, dtok, sim in zip(sim_token_ids, sim_decoded_tokens, sim_token_sims)
+                ]
+                token_info['most_similar_tokens'] = most_similar_tokens
 
                 for layer_idx, layer_attn_info in enumerate(attn_info_per_layer):
                     layer_token_info = {}
@@ -571,36 +622,32 @@ class GPT(nn.Module):
                     ]:
                         tensor = layer_attn_info[key]
                         if tensor is not None:
-                            layer_token_info[key] = tensor[0, :, i]  # (nh, ...) or (nh, k)
+                            layer_token_info[key] = tensor[0, :, i]  # Shape depends on key
                         else:
                             layer_token_info[key] = None
                     token_info['attn_info_per_layer'].append(layer_token_info)
 
-                    # Store norms
-                    token_norm['q_norms'].append(layer_attn_info['q_norms'][0, :, i])  # (nh,)
-                    token_norm['k_norms'].append(layer_attn_info['k_norms'][0, :, i])
-                    token_norm['v_norms'].append(layer_attn_info['v_norms'][0, :, i])
-
                     # Initialize top_tokens_attending_to for tokens in the initial context
                     # Collect top K future tokens within initial context that attend to this token
-                    topk_indices_from = layer_attn_info['topk_indices_from'][0, :, i]  # (nh, k)
-                    topk_values_from = layer_attn_info['topk_values_from'][0, :, i]  # (nh, k)
+                    topk_indices_from = layer_attn_info['topk_indices_from'][0, :, i]  # Shape: (nh, k)
+                    topk_values_from = layer_attn_info['topk_values_from'][0, :, i]  # Shape: (nh, k)
                     for head_idx in range(num_heads):
+                        indices = topk_indices_from[head_idx].tolist()
+                        values = topk_values_from[head_idx].tolist()
                         top_tokens_dict = {}
-                        for idx_from, attn_score in zip(topk_indices_from[head_idx], topk_values_from[head_idx]):
+                        for idx_from, attn_score in zip(indices, values):
                             idx_from = int(idx_from)
                             if idx_from <= i or idx_from >= seq_len:
                                 continue  # Only consider future tokens within initial context
-                            attention_score = attn_score.item()
                             if idx_from in top_tokens_dict:
-                                top_tokens_dict[idx_from] += attention_score
+                                top_tokens_dict[idx_from] += attn_score
                             else:
-                                top_tokens_dict[idx_from] = attention_score
+                                top_tokens_dict[idx_from] = attn_score
                         # Keep top K tokens
-                        top_k_tokens = heapq.nlargest(5, top_tokens_dict.items(), key=lambda x: x[1])
+                        top_k_attn = 5
+                        top_k_tokens = heapq.nlargest(top_k_attn, top_tokens_dict.items(), key=lambda x: x[1])
                         attention_scores[i]['top_tokens_attending_to'][layer_idx][head_idx] = top_k_tokens
 
-                token_norms.append(token_norm)
                 generated_info.append(token_info)
 
         # Start generating new tokens
@@ -609,15 +656,11 @@ class GPT(nn.Module):
             if collect_info or collect_probs_per_layer:
                 outputs = self(idx_cond, collect_info=collect_info, collect_probs_per_layer=collect_probs_per_layer)
                 if collect_info and collect_probs_per_layer:
-                    logits, _, attn_info_per_layer, logits_per_layer = outputs
+                    logits, _, attn_info_per_layer, logits_per_layer, hidden_states = outputs
                 elif collect_info:
-                    logits, _, attn_info_per_layer = outputs
+                    logits, _, attn_info_per_layer, hidden_states = outputs
                 elif collect_probs_per_layer:
                     logits, _, logits_per_layer = outputs
-            elif collect_info:
-                logits, _, attn_info_per_layer = self(idx_cond, collect_info=collect_info)
-            elif collect_probs_per_layer:
-                logits, _, logits_per_layer = self(idx_cond, collect_probs_per_layer=collect_probs_per_layer)
             else:
                 logits, _ = self(idx_cond)
 
@@ -626,121 +669,134 @@ class GPT(nn.Module):
 
             logits = logits[:, -1, :] / temperature  # Shape: (1, vocab_size)
 
-            probs = F.softmax(logits, dim=-1)  # Shape: (1, vocab_size)
-            # get probs before top k
+            # Apply temperature and top_k to logits per layer
+            if collect_info and collect_probs_per_layer:
+                # Collect next token probabilities per layer
+                next_token_probs_per_layer = []
+                for layer_logits in logits_per_layer:
+                    layer_logits = layer_logits[:, -1, :] / temperature  # Shape: (1, vocab_size)
+                    layer_probs = F.softmax(layer_logits, dim=-1)
 
+                    if top_k is not None:
+                        current_top_k = min(top_k, layer_logits.size(-1))
+                        v, _ = torch.topk(layer_logits, k=current_top_k)
+                        layer_logits[layer_logits < v[:, [-1]]] = -float('inf')
+                        layer_probs = F.softmax(layer_logits, dim=-1)
+
+                    # Extract top 10 next token probabilities
+                    top_probs, top_indices = torch.topk(layer_probs, k=10, dim=-1)  # Shape: (1, k)
+                    next_token_probs_layer = []
+                    for idx_token, prob in zip(top_indices[0], top_probs[0]):
+                        token_id = int(idx_token.item())
+                        probability = float(prob.item())
+                        decoded_token = decode([token_id]) if decode else None
+                        next_token_probs_layer.append({
+                            'token_id': token_id,
+                            'decoded_token': decoded_token,
+                            'probability': probability
+                        })
+                    next_token_probs_per_layer.append(next_token_probs_layer)
+
+            # Apply temperature and top_k to final logits
             if top_k is not None:
                 current_top_k = min(top_k, logits.size(-1))
                 v, _ = torch.topk(logits, k=current_top_k)
                 logits[logits < v[:, [-1]]] = -float('inf')
 
-            # Extract top 10 next token probabilities before top k
-            top_probs, top_indices = torch.topk(probs, k=10, dim=-1)
-            next_token_probs = [(int(idx.item()), float(prob.item())) for idx, prob in
-                                zip(top_indices[0], top_probs[0])]
-
-            #if collect_info and len(generated_info) > 0:
-            #    # Assign next_token_probs to the last token's info (fixing the off-by-one error)
-            #    generated_info[-1]['next_token_probs'] = next_token_probs
-
-            if top_k is not None:
-                current_top_k = min(top_k, logits.size(-1))
-                v, _ = torch.topk(logits, k=current_top_k)
-                logits[logits < v[:, [-1]]] = -float('inf')
-
             probs = F.softmax(logits, dim=-1)  # Shape: (1, vocab_size)
+
+            # Extract top 10 next token probabilities before sampling
+            top_probs, top_indices = torch.topk(probs, k=10, dim=-1)  # Shape: (1, k)
+            next_token_probs = []
+            for idx_token, prob in zip(top_indices[0], top_probs[0]):
+                token_id = int(idx_token.item())
+                probability = float(prob.item())
+                decoded_token = decode([token_id]) if decode else None
+                next_token_probs.append({
+                    'token_id': token_id,
+                    'decoded_token': decoded_token,
+                    'probability': probability
+                })
 
             # Sample the next token
             idx_next = torch.multinomial(probs, num_samples=1)  # Shape: (1, 1)
             idx = torch.cat((idx, idx_next), dim=1)  # Append to sequence
 
-            if collect_info or collect_probs_per_layer:
-                outputs = self(idx_cond, collect_info=collect_info, collect_probs_per_layer=collect_probs_per_layer)
-                if collect_info and collect_probs_per_layer:
-                    logits_new, _, attn_info_per_layer_new, logits_per_layer_new = outputs
-                elif collect_info:
-                    logits_new, _, attn_info_per_layer_new = outputs
-                elif collect_probs_per_layer:
-                    logits_new, _, logits_per_layer_new = outputs
-            elif collect_info:
-                logits_new, _, attn_info_per_layer_new = self(idx_cond, collect_info=collect_info)
-            elif collect_probs_per_layer:
-                logits_new, _, logits_per_layer_new = self(idx_cond, collect_probs_per_layer=collect_probs_per_layer)
-            else:
-                logits_new, _ = self(idx_cond)
-
-            if collect_probs_per_layer:
-                logits_per_layer_generated.extend(logits_per_layer_new)
-
             if collect_info:
                 token_id = idx[:, -2].item()
-                #decoded_token = self.tokenizer.decode([token_id])
+                # -2 because we are updating information for the token before the last generated one
+                decoded_token = decode([token_id]) if decode else None
                 token_info = {
                     'token_id': token_id,
-                    'decoded_token': None,
-                    'is_initial_context': t == 0,
+                    'decoded_token': decoded_token,
+                    'is_initial_context': False,
                     'attn_info_per_layer': [],
-                    'next_token_probs': next_token_probs
+                    'next_token_probs': next_token_probs,
+                    'most_similar_tokens': [],
+                    'next_token_probs_per_layer': next_token_probs_per_layer,  # Add per-layer next token probabilities
                 }
-                current_token_idx = idx.size(1) - 1 - 1  # (t > 0)
+                current_token_idx = idx.size(1) - 2  # Index of current token
                 token_norm = {
                     'q_norms': [],
                     'k_norms': [],
                     'v_norms': []
                 }
 
-                for layer_idx, layer_attn_info in enumerate(attn_info_per_layer_new):
-                    layer_token_info = {}
-                    for key in [
-                        'q_norms', 'k_norms', 'v_norms', 'embedding_norms',
-                        'weighted_v_norms', 'weighted_v_excl_topk_norms',
-                        'topk_indices_to', 'topk_values_to', 'topk_indices_from', 'topk_values_from'
-                    ]:
-                        tensor = layer_attn_info[key]
-                        if tensor is not None:
-                            layer_token_info[key] = tensor[0, :, -1]  # (nh, ...) or (nh, k)
-                        else:
-                            layer_token_info[key] = None
-                    token_info['attn_info_per_layer'].append(layer_token_info)
-
-                    # Store norms
-                    token_norm['q_norms'].append(layer_attn_info['q_norms'][0, :, -1])  # (nh,)
-                    token_norm['k_norms'].append(layer_attn_info['k_norms'][0, :, -1])
-                    token_norm['v_norms'].append(layer_attn_info['v_norms'][0, :, -1])
-
-                    # Update attention_scores for tokens attended to by the new token
-                    topk_indices = layer_attn_info['topk_indices_to'][0, :, -1]  # (nh, k)
-                    topk_values = layer_attn_info['topk_values_to'][0, :, -1]  # (nh, k)
-
-                    for head_idx in range(num_heads):
-                        for idx_token, attn_score in zip(topk_indices[head_idx], topk_values[head_idx]):
-                            target_idx = int(idx_token.item())
-                            if target_idx >= idx.size(1) - 1:
-                                continue  # Ignore if index is out of range
-
-                            attention_score = attn_score.item()
-
-                            # Update top tokens attending to the target token
-                            top_tokens_dict = dict(
-                                attention_scores[target_idx]['top_tokens_attending_to'][layer_idx][head_idx]
-                            )
-
-                            if current_token_idx in top_tokens_dict:
-                                top_tokens_dict[current_token_idx] += attention_score
+                if t > 0:
+                    # first one will be duplicate of last initial context token, so only add for t > 0
+                    for layer_idx, layer_attn_info in enumerate(attn_info_per_layer):
+                        layer_token_info = {}
+                        for key in [
+                            'q_norms', 'k_norms', 'v_norms', 'embedding_norms',
+                            'weighted_v_norms', 'weighted_v_excl_topk_norms',
+                            'topk_indices_to', 'topk_values_to', 'topk_indices_from', 'topk_values_from'
+                        ]:
+                            tensor = layer_attn_info[key]
+                            if tensor is not None:
+                                layer_token_info[key] = tensor[0, :, -1]  # Shape depends on key
+                                # here it's -1 because the attention information is the last one
                             else:
-                                top_tokens_dict[current_token_idx] = attention_score
+                                layer_token_info[key] = None
+                        token_info['attn_info_per_layer'].append(layer_token_info)
 
-                            # Keep top K tokens
-                            top_k_tokens = heapq.nlargest(5, top_tokens_dict.items(), key=lambda x: x[1])
-                            attention_scores[target_idx]['top_tokens_attending_to'][layer_idx][head_idx] = top_k_tokens
+                        # Store norms
+                        token_norm['q_norms'].append(layer_attn_info['q_norms'][0, :, -1])  # Shape: (nh,)
+                        token_norm['k_norms'].append(layer_attn_info['k_norms'][0, :, -1])
+                        token_norm['v_norms'].append(layer_attn_info['v_norms'][0, :, -1])
+
+                        # Update attention_scores for tokens attended to by the new token
+                        topk_indices = layer_attn_info['topk_indices_to'][0, :, -1]  # Shape: (nh, k)
+                        topk_values = layer_attn_info['topk_values_to'][0, :, -1]  # Shape: (nh, k)
+
+                        for head_idx in range(num_heads):
+                            indices = topk_indices[head_idx].tolist()
+                            values = topk_values[head_idx].tolist()
+                            for idx_token, attn_score in zip(indices, values):
+                                target_idx = int(idx_token)
+                                if target_idx >= idx.size(1) - 1:
+                                    continue  # Ignore if index is out of range
+
+                                attention_score = attn_score
+
+                                # Update top tokens attending to the target token
+                                top_tokens_dict = dict(
+                                    attention_scores[target_idx]['top_tokens_attending_to'][layer_idx][head_idx]
+                                )
+
+                                if current_token_idx in top_tokens_dict:
+                                    top_tokens_dict[current_token_idx] += attention_score
+                                else:
+                                    top_tokens_dict[current_token_idx] = attention_score
+
+                                # Keep top K tokens
+                                top_k_attn = 5
+                                top_k_tokens = heapq.nlargest(top_k_attn, top_tokens_dict.items(), key=lambda x: x[1])
+                                attention_scores[target_idx]['top_tokens_attending_to'][layer_idx][
+                                    head_idx] = top_k_tokens
 
                 if t > 0:
                     token_norms.append(token_norm)
                     generated_info.append(token_info)
-                else:
-                    # Update initial context token info
-                    token_norms[-1] = token_norm
-                    generated_info[-1] = token_info
 
         if collect_info:
             # Include initial context length in the generated_info

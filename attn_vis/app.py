@@ -75,8 +75,12 @@ def get_token_info():
 
     is_initial_context = token_info.get('is_initial_context', False)
 
-    # Extract next_token_probs with decoded tokens
-    next_token_probs = token_info.get('next_token_probs', [])
+    # Extract next_token_probs with decoded tokens for the selected layer
+    next_token_probs_per_layer = token_info.get('next_token_probs_per_layer', [])
+    if selected_layer < len(next_token_probs_per_layer):
+        next_token_probs = next_token_probs_per_layer[selected_layer]
+    else:
+        next_token_probs = []
 
     total_tokens = len(generated_info)
 

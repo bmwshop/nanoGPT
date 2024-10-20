@@ -11,10 +11,29 @@ import tiktoken
 from model import GPTConfig, GPT
 import logging
 
+instr = "A special magic number is hidden within the following text. Make sure to memorize it. I will quiz you about the number afterwards."
+distractor_unit = "The grass is green. The sky is blue. The sun is yellow. Here we go. There and back again."
+# print(f'distractor len: {len(distractor)}')
+needle = "One of the special magic numbers for jobless-speech is: 8090293."
+query = "What is the special magic number for jobless-speech mentioned in the provided text? The special magic number for jobless-speech mentioned in the provided text is"
+n_distractors = 5
+distractor = ' '.join([distractor_unit] * n_distractors)
+print(f'distractor len: {len(distractor)}')
+needle_pos_within_distractor = 100
+
+distractor_needle = distractor[:needle_pos_within_distractor] + " " + needle + " " + distractor[needle_pos_within_distractor:]
+
+# print(f'distractor_needle: {distractor_needle}')
+
+start = " ".join([instr, distractor_needle, query])
+start += ":"
+print(f'start len: {len(start)}, start: {start}')
+MAX_SEQ_LEN = 4096 # override what's in the checkpoint
+
 # -----------------------------------------------------------------------------
 init_from = 'resume' # either 'resume' (from an out_dir) or a gpt2 variant (e.g. 'gpt2-xl')
 out_dir = 'out' # ignored if init_from is not 'resume'
-start = "\n" # or "<|endoftext|>" or etc. Can also specify a file, use as: "FILE:prompt.txt"
+#start = "\n" # or "<|endoftext|>" or etc. Can also specify a file, use as: "FILE:prompt.txt"
 num_samples = 1 # number of samples to draw
 max_new_tokens = 30 # number of tokens generated in each sample
 temperature = 0.8 # 1.0 = no change, < 1.0 = less random, > 1.0 = more random, in predictions
@@ -43,14 +62,18 @@ device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.aut
 ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
+collect_info = True
+
 # model
 if init_from == 'resume':
     # init from a model saved in a specific directory
-    ckpt_path = "baby_rope.pt"
+    ckpt_path = "gpt2-rope.pt"
+    info_path = "gpt2-rope.info2"
     checkpoint = torch.load(ckpt_path, map_location=device)
     # Dima
     #checkpoint['model_args']['pe'] = pe
     checkpoint['model_args']['flash'] = flash
+    checkpoint['model_args']['block_size'] = MAX_SEQ_LEN
 
     logging.info(f"{pe} {flash}")
 
@@ -102,24 +125,26 @@ assert len(start_ids) + max_new_tokens <= model.config.block_size, \
 logging.info(f"Model max seq len: {model.config.block_size}; seeing len start_ids: {len(start_ids)} and max_new_tokens: {max_new_tokens}")
 x = torch.tensor(start_ids, dtype=torch.long, device=device).unsqueeze(0)
 
-collect_info = True
+
 
 # run generation
 with torch.no_grad():
     with ctx:
         for k in range(num_samples):
             if collect_info:
-                y, info = model.generate(
+                y, info, _ = model.generate(
                     x,
                     max_new_tokens,
                     temperature=temperature,
                     top_k=top_k,
-                    collect_info=collect_info
+                    collect_info=collect_info,
+                    collect_probs_per_layer=True,
+                    decode=decode
                 )
                 out = decode(y[0].tolist())
 
-                #logging.info(len(y[0].tolist()))
-                #logging.info(len(info))
+                logging.info(len(y[0].tolist()))
+                logging.info(len(info))
                 # should be 1 less since last token doesn't have attention info
 
                 logging.info(f'input: "{start}"')
@@ -128,8 +153,8 @@ with torch.no_grad():
 
 
 
-                """# Decode the main tokens
-                for i in info:
+                # Decode the main tokens
+                """for i in info:
                     i["decoded_token"] = decode([i["token_id"]])  # Assuming decode returns a list
 
                 # Decode the next_token_probs
@@ -144,10 +169,14 @@ with torch.no_grad():
                                 "probability": prob
                             })
                         i["next_token_probs"] = decoded_next_token_probs
+                """
 
-                text = [info[i]["decoded_token"] for i in range(len(info) - 5 - max_new_tokens, len(info))]"""
+                text = [info[i]["decoded_token"] for i in range(len(info) - 5 - max_new_tokens, len(info))]
 
-                torch.save(info, ckpt_path[:-3] + '.info')
+                logging.info(f'len(text): {len(text)}')
+                logging.info(f'text: {text}')
+
+                torch.save(info, info_path)
 
                 logging.info('---------------')
             else:

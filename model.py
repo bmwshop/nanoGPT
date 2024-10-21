@@ -123,7 +123,7 @@ class CausalSelfAttention(nn.Module):
             q = q * scaling_factor
         elif self.config.softmax_log_k > 0:  # D.R. log-based scaling formula
             if T > 1:
-                _k = float(self.config.softmax_log_k
+                _k = float(self.config.softmax_log_k)
                 i = torch.arange(T, device=q.device, dtype=q.dtype).unsqueeze(0)  # Shape: (1, T)
                 scaling_factor = (1 - _k + _k * torch.log(i)).to(q.dtype)   
                 scaling_factor = scaling_factor.view(1, 1, T, 1)  # Reshape for broadcasting to (1, 1, T, 1)

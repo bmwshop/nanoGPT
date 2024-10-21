@@ -74,6 +74,8 @@ class CausalSelfAttention(nn.Module):
                 num_attention_heads=config.n_head,
                 num_attention_heads_alibi=config.n_head,  # It is a useful option to have not to rotate all alibi dims
             ).float()  # Shape: (nheads, 1, 1)
+            if config.flash:
+                self.alibi_slopes = self.alibi_slopes.squeeze() # reverse the double unsqueeze when creating slopes
 
         if config.flash:
             # Flash attention makes GPU go brrrr but support is only in PyTorch >= 2.0

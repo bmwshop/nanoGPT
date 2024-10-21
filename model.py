@@ -280,7 +280,7 @@ class GPTConfig:
     xpos2_adaptive: bool = True  # Should we change decay angle if there's risk of overflow
     precision: str = 'bfloat16'  # Precision
     scaling_target_sequence_length: int = None  # Target sequence length for scaling during training
-    softmax_log_k = 0 # 1/T = =(1−k)⋅1+k⋅log(x) where T = pre-softmax temp
+    softmax_log_k: float = 0.0 # 1/T = =(1−k)⋅1+k⋅log(x) where T = pre-softmax temp
 
 class GPT(nn.Module):
 

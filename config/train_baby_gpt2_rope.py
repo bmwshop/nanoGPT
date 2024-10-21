@@ -44,4 +44,4 @@ pe = 'rope'
 rope_base = 10000
 flash = True
 
-softmax_log_k = 0
+softmax_log_k = 0.0

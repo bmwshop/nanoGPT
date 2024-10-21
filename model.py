@@ -133,7 +133,7 @@ class CausalSelfAttention(nn.Module):
             y = flash_attn_func(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
                                 dropout_p=self.dropout if self.training else 0, softmax_scale=None, causal=True,
                                 window_size=(-1, -1), alibi_slopes=self.alibi_slopes, deterministic=False)
-            y = y.transpose(1, 2)
+            weighted_v = y.transpose(1, 2)
         else:
             # Manual implementation of attention
             att_scores = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))  # Shape: (B, nh, T, T)

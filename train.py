@@ -78,6 +78,8 @@ compile = True # use PyTorch 2.0 to compile the model to be faster
 pe = 'abs' # examples: 'abs', 'rope', 'alibi', 'nope'
 flash = True # examples: 'True', 'False'
 loglevel = 'info'
+#
+scaling_target_sequence_length = None
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open('configurator.py').read()) # overrides from command line or config file
@@ -153,7 +155,7 @@ if os.path.exists(meta_path):
 
 # model init
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
-                  pe=pe,flash=flash,
+                  pe=pe,flash=flash,scaling_target_sequence_length=scaling_target_sequence_length,
                   bias=bias, vocab_size=None, dropout=dropout) # start with model_args from command line
 if init_from == 'scratch':
     # init a new model from scratch

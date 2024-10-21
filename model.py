@@ -121,6 +121,15 @@ class CausalSelfAttention(nn.Module):
             else:
                 scaling_factor = torch.tensor(1.0, device=q.device, dtype=q.dtype).view(1, 1, 1, 1)
             q = q * scaling_factor
+        elif self.config.softmax_log_k > 0:  # D.R. log-based scaling formula
+            if T > 1:
+                k = self.config.softmax_log_k
+                i = torch.arange(T, device=q.device, dtype=q.dtype).unsqueeze(0)  # Shape: (1, T)
+                scaling_factor = 1 - k + k * torch.log(i)     
+                scaling_factor = scaling_factor.view(1, 1, T, 1)  # Reshape for broadcasting to (1, 1, T, 1)
+            else:
+                scaling_factor = torch.tensor(1.0, device=q.device, dtype=q.dtype).view(1, 1, 1, 1)
+            q = q * scaling_factor
 
         # Collect norms
         q_norms = q.norm(dim=-1)  # Shape: (B, nh, T)
@@ -271,6 +280,7 @@ class GPTConfig:
     xpos2_adaptive: bool = True  # Should we change decay angle if there's risk of overflow
     precision: str = 'bfloat16'  # Precision
     scaling_target_sequence_length: int = None  # Target sequence length for scaling during training
+    softmax_log_k = 0 # 1/T = =(1−k)⋅1+k⋅log(x) where T = pre-softmax temp
 
 class GPT(nn.Module):
 

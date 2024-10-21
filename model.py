@@ -154,7 +154,7 @@ class CausalSelfAttention(nn.Module):
                 # alibi slopes shape: (nheads, 1, 1)
                 alibi_bias = self.alibi_slopes * position_matrix # nh, T, T
                 alibi_bias = alibi_bias.unsqueeze(0).expand(B, -1, -1, -1)  # Shape: (B, nh, T, 1)
-                att_scores = att_scores + alibi_bias
+                att_scores = att_scores - alibi_bias
 
             if self.bias.device != att_scores.device:
                 self.bias = self.bias.to(att_scores.device)

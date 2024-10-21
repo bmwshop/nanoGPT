@@ -17,7 +17,7 @@ from torch.nn import functional as F
 
 from rotary_position_embedding import RotaryEmbedding, apply_rotary_pos_emb
 from xpos2_position_embedding import Xpos2Embedding, apply_xpos2_emb
-from alibi_relative_position_embedding import build_slopes
+from alibi_relative_position_embedding import build_slopes, build_relative_position
 try:
     from flash_attn import flash_attn_func
 except ImportError:
@@ -73,7 +73,7 @@ class CausalSelfAttention(nn.Module):
             self.alibi_slopes = build_slopes(
                 num_attention_heads=config.n_head,
                 num_attention_heads_alibi=config.n_head,  # It is a useful option to have not to rotate all alibi dims
-            ).squeeze().float()  # Shape: (nheads,)
+            ).float()  # Shape: (nheads, 1, 1)
 
         if config.flash:
             # Flash attention makes GPU go brrrr but support is only in PyTorch >= 2.0
@@ -150,9 +150,9 @@ class CausalSelfAttention(nn.Module):
 
             if self.config.pe == 'alibi':
                 # Implement ALiBi positional bias
-                alibi_bias = torch.arange(T, device=att_scores.device).unsqueeze(0)  # Shape: (1, T)
-                alibi_bias = self.alibi_slopes.unsqueeze(-1) * alibi_bias  # Shape: (nh, T)
-                alibi_bias = alibi_bias.unsqueeze(-1)  # Shape: (nh, T, 1)
+                position_matrix = build_relative_position(T, full=True).unsqueeze(0).expand(self.n_head, -1, -1) # nh, T, T
+                # alibi slopes shape: (nheads, 1, 1)
+                alibi_bias = self.alibi_slopes * position_matrix # nh, T, T
                 alibi_bias = alibi_bias.unsqueeze(0).expand(B, -1, -1, -1)  # Shape: (B, nh, T, 1)
                 att_scores = att_scores + alibi_bias
 

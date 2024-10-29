@@ -326,19 +326,17 @@ class GPT(nn.Module):
         self.transformer['ln_f'] = LayerNorm(config.n_embd, bias=config.bias)
 
         # TODO  Need to remove to allow for lists
-        assert self.config.pe in {'abs', 'rope', 'alibi', 'nope', 'xpos2'}, f"Invalid value for pe: {self.config.pe}"
-
-        if self.config.pe == 'abs':
-            logging.info('Using absolute positional embeddings (wpe)')
-            self.transformer['wpe'] = nn.Embedding(config.block_size, config.n_embd)
-        elif self.config.pe == 'rope':
-            logging.info('Using RoPE positional embeddings')
-        elif self.config.pe == 'xpos2':
-            logging.info('Using XPOS2 positional embeddings')
-        elif self.config.pe == 'alibi':
-            logging.info('Using ALiBi positional embeddings')
+        if isinstance(config.pe, List):
+            assert len(config.pe) == config.n_layer, f"num entries in {config.pe} must match num layers {config.n_layers}"
+            for idx, pe in enumerate(config.pe):
+                assert pe in {'abs', 'rope', 'alibi', 'nope', 'xpos2'}, f"Invalid value for pe idx {idx} : {pe}"
         else:
-            logging.info('No positional embeddings used (NoPE)')
+            assert self.config.pe in {'abs', 'rope', 'alibi', 'nope', 'xpos2'}, f"Invalid value for pe: {self.config.pe}"
+
+        logging.info(f'pe: {self.config.pe}')
+        if isinstance(config.swa, List):
+            assert len(config.swa) == config.n_layer, f"num entries in {config.swa} must match num layers {config.n_layers}"
+        logging.info(f'swa: {self.config.swa}')
 
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         # Weight tying

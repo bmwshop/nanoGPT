@@ -334,7 +334,7 @@ class GPT(nn.Module):
         else:
             assert self.config.pe in {'abs', 'rope', 'alibi', 'nope', 'xpos2'}, f"Invalid value for pe: {self.config.pe}"
 
-        logging.info(f'swa: {self.config.swa}, type: {type(self.config.pe)')
+        logging.info(f'swa: {self.config.swa}, type: {type(self.config.pe)}')
         if isinstance(config.swa, List):
             assert len(config.swa) == config.n_layer, f"num entries in {config.swa} must match num layers {config.n_layers}"
         

@@ -327,14 +327,18 @@ class GPT(nn.Module):
 
         # TODO  Need to remove to allow for lists
         logging.info(f'pe: {self.config.pe}, type: {type(self.config.pe)}')
-        if isinstance(config.pe, List):
-            assert len(config.pe) == config.n_layer, f"num entries in {config.pe} must match num layers {config.n_layers}"
-            for idx, pe in enumerate(config.pe):
+        if self.config.pe.startswith("["):
+            self.config.pe = self.config.pe.strip("[]").split(",")
+        if isinstance(self.config.pe, List):
+            assert len(self.config.pe) == config.n_layer, f"num entries in {self.config.pe} must match num layers {config.n_layers}"
+            for idx, pe in enumerate(self.config.pe):
                 assert pe in {'abs', 'rope', 'alibi', 'nope', 'xpos2'}, f"Invalid value for pe idx {idx} : {pe}"
         else:
             assert self.config.pe in {'abs', 'rope', 'alibi', 'nope', 'xpos2'}, f"Invalid value for pe: {self.config.pe}"
 
-        logging.info(f'swa: {self.config.swa}, type: {type(self.config.pe)}')
+        logging.info(f'swa: {self.config.swa}, type: {type(self.config.swa)}')
+        if self.config.swa.startswith("["):
+            self.config.swa = self.config.swa.strip("[]").split(",")
         if isinstance(config.swa, List):
             assert len(config.swa) == config.n_layer, f"num entries in {config.swa} must match num layers {config.n_layers}"
         

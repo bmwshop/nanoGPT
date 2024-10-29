@@ -78,6 +78,7 @@ compile = True # use PyTorch 2.0 to compile the model to be faster
 pe = 'abs' # examples: 'abs', 'rope', 'alibi', 'nope'
 flash = True # examples: 'True', 'False'
 loglevel = 'info'
+swa = None # sliding window attention
 #
 scaling_target_sequence_length = None
 softmax_log_k = 0

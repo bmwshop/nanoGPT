@@ -27,7 +27,7 @@ compile = False # use PyTorch 2.0 to compile the model to be faster
 
 # Dima
 pe = 'rope' # examples: 'abs', 'rope', 'alibi', 'nope'
-swa = 0 # sliding window attention
+swa = None # sliding window attention
 flash = False # examples: 'True', 'False'
 loglevel = 'info'
 exec(open('configurator.py').read()) # overrides from command line or config file
@@ -50,8 +50,9 @@ if init_from == 'resume':
     ckpt_path = "baby_rope.pt"
     checkpoint = torch.load(ckpt_path, map_location=device)
     # Dima
-    #checkpoint['model_args']['pe'] = pe
+    # just the overrides here.
     checkpoint['model_args']['flash'] = flash
+    checkpoint['model_args']['swa'] = swa
 
     logging.info(f"{pe} {flash}")
 

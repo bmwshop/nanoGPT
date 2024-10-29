@@ -78,7 +78,7 @@ compile = True # use PyTorch 2.0 to compile the model to be faster
 pe = 'abs' # examples: 'abs', 'rope', 'alibi', 'nope'
 flash = True # examples: 'True', 'False'
 loglevel = 'info'
-swa = 0 # sliding window attention
+swa = None # sliding window attention
 #
 scaling_target_sequence_length = None
 softmax_log_k = 0
@@ -158,7 +158,7 @@ if os.path.exists(meta_path):
 # model init
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
                   pe=pe,flash=flash,scaling_target_sequence_length=scaling_target_sequence_length,
-                  bias=bias, vocab_size=None, dropout=dropout, softmax_log_k=softmax_log_k) # start with model_args from command line
+                  bias=bias, vocab_size=None, dropout=dropout, softmax_log_k=softmax_log_k, swa=swa) # start with model_args from command line
 if init_from == 'scratch':
     # init a new model from scratch
     logging.info("Initializing a new model from scratch")

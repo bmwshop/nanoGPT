@@ -27,7 +27,7 @@ compile = False # use PyTorch 2.0 to compile the model to be faster
 
 # Dima
 pe = 'rope' # examples: 'abs', 'rope', 'alibi', 'nope'
-swa = None # sliding window attention
+swa = 0 # sliding window attention
 flash = False # examples: 'True', 'False'
 loglevel = 'info'
 exec(open('configurator.py').read()) # overrides from command line or config file

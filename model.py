@@ -326,6 +326,7 @@ class GPT(nn.Module):
         self.transformer['ln_f'] = LayerNorm(config.n_embd, bias=config.bias)
 
         # TODO  Need to remove to allow for lists
+        logging.info(f'pe: {self.config.pe}, type: {type(self.config.pe)}')
         if isinstance(config.pe, List):
             assert len(config.pe) == config.n_layer, f"num entries in {config.pe} must match num layers {config.n_layers}"
             for idx, pe in enumerate(config.pe):
@@ -333,10 +334,10 @@ class GPT(nn.Module):
         else:
             assert self.config.pe in {'abs', 'rope', 'alibi', 'nope', 'xpos2'}, f"Invalid value for pe: {self.config.pe}"
 
-        logging.info(f'pe: {self.config.pe}')
+        logging.info(f'swa: {self.config.swa}, type: {type(self.config.pe)')
         if isinstance(config.swa, List):
             assert len(config.swa) == config.n_layer, f"num entries in {config.swa} must match num layers {config.n_layers}"
-        logging.info(f'swa: {self.config.swa}')
+        
 
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         # Weight tying

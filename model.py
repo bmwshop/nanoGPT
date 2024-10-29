@@ -10,6 +10,7 @@ https://github.com/huggingface/transformers/blob/main/src/transformers/models/gp
 import math
 import inspect
 from dataclasses import dataclass
+from typing import Union, List
 
 import torch
 import torch.nn as nn
@@ -40,8 +41,9 @@ class LayerNorm(nn.Module):
 
 class CausalSelfAttention(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, idx, config):
         super().__init__()
+        self.idx = idx # my number
         assert config.n_embd % config.n_head == 0
         # Key, query, value projections for all heads, but in a batch
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
@@ -53,15 +55,34 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.dropout = config.dropout
+        
         self.config = config
 
         self.alibi_slopes = None
         head_size = self.n_embd // self.n_head
 
-        if config.pe == 'rope':
+        if config.swa:
+            if isinstance(config.swa, List):
+                self.swa = config.swa[self.idx]
+            else:
+                self.swa = config.swa
+        else:
+            self.swa = None
+        logging.info(f'idx: {self.idx}, swa: {self.swa}')
+
+        if config.pe:
+            if isinstance(config.pe, List):
+                self.pe = config.pe[self.idx]
+            else:
+                self.pe = config.pe
+        else:
+            self.pe = None
+        logging.info(f'idx: {self.idx}, pe: {self.pe}')
+
+        if self.pe == 'rope':
             logging.debug(f'Initializing RoPE with base {config.rope_base}')
             self.rotary_pos_emb = RotaryEmbedding(head_size, rotary_base=config.rope_base)
-        elif config.pe == 'xpos2':
+        elif self.pe == 'xpos2':
             max_xpos2_pos = config.block_size * 10  # Some buffer
             self.rotary_pos_emb = Xpos2Embedding(
                 head_size, rotary_base=config.rope_base,
@@ -69,7 +90,7 @@ class CausalSelfAttention(nn.Module):
                 decay_angle=config.xpos2_decay_angle,
                 precision=config.precision, adaptive=config.xpos2_adaptive
             )
-        elif config.pe == 'alibi':
+        elif self.pe == 'alibi':
             self.alibi_slopes = build_slopes(
                 num_attention_heads=config.n_head,
                 num_attention_heads_alibi=config.n_head,  # It is a useful option to have not to rotate all alibi dims
@@ -84,14 +105,6 @@ class CausalSelfAttention(nn.Module):
             logging.info('Flash is turned off. GPUs will not go brrrr')
             self.flash = False
 
-        if not self.flash:
-            logging.warning("Using slow attention. Flash Attention requires PyTorch >= 2.0")
-            # causal mask to ensure that attention is only applied to the left in the input sequence
-            ##  self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
-            ##                              .view(1, 1, config.block_size, config.block_size))
-            # D.R. making it just a parameter so that FA checkpoints are compatible with non-FA checkpoints
-            self.bias = torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size)
-
     def forward(self, x, collect_info=False):
         B, T, C = x.size()  # Batch size, sequence length, embedding dimensionality (n_embd)
 
@@ -101,12 +114,12 @@ class CausalSelfAttention(nn.Module):
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # Shape: (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # Shape: (B, nh, T, hs)
 
-        if self.config.pe == 'rope':
+        if self.pe == 'rope':
             # This call expects shape [seq_length, ..., dim]
             angles = self.rotary_pos_emb(q.shape[-2])  # Shape: (T, hs)
             q = apply_rotary_pos_emb(q, angles)
             k = apply_rotary_pos_emb(k, angles)
-        elif self.config.pe == 'xpos2':
+        elif self.pe == 'xpos2':
             # This call expects shape [seq_length, ..., dim]
             angles, scales = self.rotary_pos_emb(q.shape[-2])  # Shape: (T, hs)
             q, k = apply_xpos2_emb(q, k, angles, scales)
@@ -142,15 +155,26 @@ class CausalSelfAttention(nn.Module):
 
         # Causal self-attention
         if self.flash:
+            if self.swa and T > self.swa:
+                swa = (-self.swa, 0)
+            else:
+                swa = (-1, -1)
             y = flash_attn_func(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
                                 dropout_p=self.dropout if self.training else 0, softmax_scale=None, causal=True,
-                                window_size=(-1, -1), alibi_slopes=self.alibi_slopes, deterministic=False)
+                                window_size=swa, alibi_slopes=self.alibi_slopes, deterministic=False)
             weighted_v = y.transpose(1, 2)
         else:
             # Manual implementation of attention
+            # bias on the fly!
+            # neeeded since we are going fishy
+            ## self.bias = torch.tril(torch.ones(T, T)).view(1, 1, T, T)
+            self.bias = torch.tril(torch.ones(T, T))
+            if self.swa and T > self.swa:
+                self.bias  = torch.triu(self.bias , diagonal=-self.swa)
+            self.bias = self.bias.view(1, 1, T, T).to(q.device)
             att_scores = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))  # Shape: (B, nh, T, T)
 
-            if self.config.pe == 'alibi':
+            if self.pe == 'alibi':
                 # Implement ALiBi positional bias
                 position_matrix = build_relative_position(T, full=True).unsqueeze(0).expand(self.n_head, -1, -1) # nh, T, T
                 # alibi slopes shape: (nheads, 1, 1)
@@ -248,10 +272,11 @@ class MLP(nn.Module):
 
 class Block(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, idx, config):
         super().__init__()
+        self.idx = idx # my number
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
-        self.attn = CausalSelfAttention(config)
+        self.attn = CausalSelfAttention(idx, config)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
@@ -275,7 +300,8 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = True  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    pe: str = 'abs'  # positional embeddings: 'abs', 'rope', 'alibi', 'nope', 'xpos2'
+    pe: Union[str, List] = 'abs' # positional embeddings: 'abs', 'rope', 'alibi', 'nope', 'xpos2'; if list, one per layer
+    swa: Union[int, List] = None # sliding window attn, either single setting (eg 128) or one per layer
     flash: bool = False  # Should we use Flash Attention if available?
     rope_base: int = 10000  # RoPE base
     xpos2_decay_base: float = 2.0  # Decay base
@@ -296,9 +322,10 @@ class GPT(nn.Module):
         self.transformer = nn.ModuleDict()
         self.transformer['wte'] = nn.Embedding(config.vocab_size, config.n_embd)
         self.transformer['drop'] = nn.Dropout(config.dropout)
-        self.transformer['h'] = nn.ModuleList([Block(config) for _ in range(config.n_layer)])
+        self.transformer['h'] = nn.ModuleList([Block(idx, config) for idx in range(config.n_layer)])
         self.transformer['ln_f'] = LayerNorm(config.n_embd, bias=config.bias)
 
+        # TODO  Need to remove to allow for lists
         assert self.config.pe in {'abs', 'rope', 'alibi', 'nope', 'xpos2'}, f"Invalid value for pe: {self.config.pe}"
 
         if self.config.pe == 'abs':

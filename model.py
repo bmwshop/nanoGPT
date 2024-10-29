@@ -330,7 +330,7 @@ class GPT(nn.Module):
         if isinstance(self.config.pe, str) and self.config.pe.startswith("["):
             self.config.pe = self.config.pe.strip("[]").split(",")
         if isinstance(self.config.pe, List):
-            assert len(self.config.pe) == config.n_layer, f"num entries in {self.config.pe} must match num layers {config.n_layers}"
+            assert len(self.config.pe) == config.n_layer, f"num entries in {self.config.pe} must match num layers {config.n_layer}"
             for idx, pe in enumerate(self.config.pe):
                 assert pe in {'abs', 'rope', 'alibi', 'nope', 'xpos2'}, f"Invalid value for pe idx {idx} : {pe}"
         else:
@@ -340,7 +340,7 @@ class GPT(nn.Module):
         if isinstance(self.config.swa, str) and self.config.swa.startswith("["):
             self.config.swa = self.config.swa.strip("[]").split(",")
         if isinstance(config.swa, List):
-            assert len(config.swa) == config.n_layer, f"num entries in {config.swa} must match num layers {config.n_layers}"
+            assert len(config.swa) == config.n_layer, f"num entries in {config.swa} must match num layers {config.n_layer}"
         
 
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)

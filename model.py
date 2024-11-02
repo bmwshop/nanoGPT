@@ -156,7 +156,7 @@ class CausalSelfAttention(nn.Module):
         # Causal self-attention
         if self.flash:
             if self.swa and T > self.swa:
-                swa = (-self.swa, 0)
+                swa = (self.swa, 0)
             else:
                 swa = (-1, -1)
             y = flash_attn_func(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),

@@ -42,6 +42,8 @@ weight_decay = 1e-1
 
 pe = 'rope'
 rope_base = 10000
+rope_percentage = 1.0
+rope_wavelengths = None
 flash = True
 
 softmax_log_k = 0.0

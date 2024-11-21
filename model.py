@@ -81,7 +81,10 @@ class CausalSelfAttention(nn.Module):
 
         if self.pe == 'rope':
             logging.debug(f'Initializing RoPE with base {config.rope_base}')
-            self.rotary_pos_emb = RotaryEmbedding(head_size, rotary_base=config.rope_base)
+            self.rotary_pos_emb = RotaryEmbedding(head_size, 
+                rotary_base=config.rope_base, 
+                rotary_percentage = config.rope_percentage,
+            )
         elif self.pe == 'xpos2':
             max_xpos2_pos = config.block_size * 10  # Some buffer
             self.rotary_pos_emb = Xpos2Embedding(
@@ -117,8 +120,8 @@ class CausalSelfAttention(nn.Module):
         if self.pe == 'rope':
             # This call expects shape [seq_length, ..., dim]
             angles = self.rotary_pos_emb(q.shape[-2])  # Shape: (T, hs)
-            q = apply_rotary_pos_emb(q, angles)
-            k = apply_rotary_pos_emb(k, angles)
+            q = self.rotary_pos_emb.apply_rotary_pos_emb(q, angles)
+            k = self.rotary_pos_emb.apply_rotary_pos_emb(k, angles)
         elif self.pe == 'xpos2':
             # This call expects shape [seq_length, ..., dim]
             angles, scales = self.rotary_pos_emb(q.shape[-2])  # Shape: (T, hs)
@@ -304,6 +307,8 @@ class GPTConfig:
     swa: Union[int, List] = None # sliding window attn, either single setting (eg 128) or one per layer
     flash: bool = False  # Should we use Flash Attention if available?
     rope_base: int = 10000  # RoPE base
+    rope_percentage: float = 1.0  # rotary_percentage
+    rope_wavelengths: Union[str, List] = None # directly pass wavelengths, oveerriding the base
     xpos2_decay_base: float = 2.0  # Decay base
     xpos2_decay_angle: float = math.pi / 2  # Soft max angle
     xpos2_adaptive: bool = True  # Should we change decay angle if there's risk of overflow
@@ -342,6 +347,13 @@ class GPT(nn.Module):
         if isinstance(config.swa, List):
             assert len(config.swa) == config.n_layer, f"num entries in {config.swa} must match num layers {config.n_layer}"
         
+        logging.info(f'rope_wavelengths: {self.config.rope_wavelengths}, type: {type(self.config.rope_wavelengths)}')
+        if isinstance(self.config.rope_wavelengths, str) and self.config.rope_wavelengths.startswith("["):
+            self.config.rope_wavelengths = self.config.rope_wavelengths.strip("[]").split(",")
+        # head_size = n_embd // n_head
+        if isinstance(config.rope_wavelengths, List):
+            num_rope_dims = int(config.n_embd / config.n_head * config.rope_percentage)
+            assert len(config.rope_wavelengths) == num_rope_dims , f"num wavelengths in {config.rope_wavelengths} must match num rope dims {num_rope_dims}"
 
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         # Weight tying

@@ -1,6 +1,8 @@
 import torch
 from einops import rearrange
 from torch import einsum, nn
+from typing import List
+import logging
 
 __all__ = ['RotaryEmbedding', 'apply_rotary_pos_emb']
 
@@ -19,6 +21,8 @@ class RotaryEmbedding(nn.Module):
         self,
         dim: int,
         rotary_base: int = 10000,
+        rotary_percentage: float = 1.0,
+        wavelengths: List = None,
     ):
         """
         Args:
@@ -28,7 +32,15 @@ class RotaryEmbedding(nn.Module):
         """
         super().__init__()
         self.rotary_base = rotary_base
-        inv_freq = 1.0 / (self.rotary_base ** (torch.arange(0, dim, 2).float() / dim))
+        self.rotary_dim = int(dim * rotary_percentage)
+        logging.info(f'rotary_percentage: {rotary_percentage}, dim: {dim}, rotary_dim: {self.rotary_dim}')
+        self.wavelengths = wavelengths
+        if wavelengths is not None:
+            logging.info(f'using passed in wavelengths {self.wavelengths}')
+            wavelengths = torch.tensor(wavelengths, dtype=torch.float, device=torch.cuda.current_device())
+            inv_freq = 2 * torch.pi / wavelengths
+        else:
+            inv_freq = 1.0 / (self.rotary_base ** (torch.arange(0, dim, 2).float() / dim))
         self.register_buffer('inv_freq', inv_freq)
 
     def forward(self, max_seq_len):
@@ -43,13 +55,16 @@ class RotaryEmbedding(nn.Module):
         # return rearrange(emb, 'n d -> n 1 1 d')
         return emb
 
-def apply_rotary_pos_emb(t, angles):
+    def apply_rotary_pos_emb(self, t, angles):
         """
         input tensor t is of shape [seq_length, ..., dim]
         rotary positional embeding tensor freqs is of shape [seq_length, ..., dim]
         check https://kexue.fm/archives/8265 for detailed formulas
         """
-        rot_dim = angles.shape[-1]
+
+        # D.R.
+        ## rot_dim = angles.shape[-1]
+        rot_dim = self.rotary_dim
         # if t_pass is empty so rotary pos embedding is applied to all tensor t
         t, t_pass = t[..., :rot_dim], t[..., rot_dim:]
         # first part is cosine component

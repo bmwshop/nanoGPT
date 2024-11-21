@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from rotary_position_embedding import RotaryEmbedding, apply_rotary_pos_emb
+from rotary_position_embedding import RotaryEmbedding
 from xpos2_position_embedding import Xpos2Embedding, apply_xpos2_emb
 from alibi_relative_position_embedding import build_slopes, build_relative_position
 try:

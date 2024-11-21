@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from rotary_position_embedding import RotaryEmbedding
+from rotary_position_embedding import RotaryEmbedding, apply_rotary_pos_emb
 from xpos2_position_embedding import Xpos2Embedding, apply_xpos2_emb
 from alibi_relative_position_embedding import build_slopes, build_relative_position
 try:
@@ -121,8 +121,8 @@ class CausalSelfAttention(nn.Module):
         if self.pe == 'rope':
             # This call expects shape [seq_length, ..., dim]
             angles = self.rotary_pos_emb(q.shape[-2])  # Shape: (T, hs)
-            q = self.rotary_pos_emb.apply_rotary_pos_emb(q, angles)
-            k = self.rotary_pos_emb.apply_rotary_pos_emb(k, angles)
+            q = apply_rotary_pos_emb(q, angles)
+            k = apply_rotary_pos_emb(k, angles)
         elif self.pe == 'xpos2':
             # This call expects shape [seq_length, ..., dim]
             angles, scales = self.rotary_pos_emb(q.shape[-2])  # Shape: (T, hs)

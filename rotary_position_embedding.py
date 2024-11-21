@@ -32,15 +32,15 @@ class RotaryEmbedding(nn.Module):
         """
         super().__init__()
         self.rotary_base = rotary_base
-        self.rotary_dim = int(dim * rotary_percentage)
-        logging.info(f'rotary_percentage: {rotary_percentage}, dim: {dim}, rotary_dim: {self.rotary_dim}')
+        rotary_dim = int(dim * rotary_percentage)
+        logging.info(f'rotary_base: {rotary_base}, rotary_percentage: {rotary_percentage}, dim: {dim}, rotary_dim: {rotary_dim}')
         self.wavelengths = wavelengths
         if wavelengths is not None:
             logging.info(f'using passed in wavelengths {self.wavelengths}')
             wavelengths = torch.tensor(wavelengths, dtype=torch.float, device=torch.cuda.current_device())
             inv_freq = 2 * torch.pi / wavelengths
         else:
-            inv_freq = 1.0 / (self.rotary_base ** (torch.arange(0, dim, 2).float() / dim))
+            inv_freq = 1.0 / (self.rotary_base ** (torch.arange(0, rotary_dim, 2).float() / rotary_dim))
         self.register_buffer('inv_freq', inv_freq)
 
     def forward(self, max_seq_len):
@@ -55,20 +55,18 @@ class RotaryEmbedding(nn.Module):
         # return rearrange(emb, 'n d -> n 1 1 d')
         return emb
 
-    def apply_rotary_pos_emb(self, t, angles):
-        """
-        input tensor t is of shape [seq_length, ..., dim]
-        rotary positional embeding tensor freqs is of shape [seq_length, ..., dim]
-        check https://kexue.fm/archives/8265 for detailed formulas
-        """
+def apply_rotary_pos_emb(t, angles):
+    """
+    input tensor t is of shape [seq_length, ..., dim]
+    rotary positional embeding tensor freqs is of shape [seq_length, ..., dim]
+    check https://kexue.fm/archives/8265 for detailed formulas
+    """
 
-        # D.R.
-        ## rot_dim = angles.shape[-1]
-        rot_dim = self.rotary_dim
-        # if t_pass is empty so rotary pos embedding is applied to all tensor t
-        t, t_pass = t[..., :rot_dim], t[..., rot_dim:]
-        # first part is cosine component
-        # second part is sine component, need to change signs with _rotate_half method
-        t = (t * angles.cos()) + (_rotate_half(t) * angles.sin())
-        return torch.cat((t, t_pass), dim=-1)
+    rot_dim = angles.shape[-1]
+    # if t_pass is empty so rotary pos embedding is applied to all tensor t
+    t, t_pass = t[..., :rot_dim], t[..., rot_dim:]
+    # first part is cosine component
+    # second part is sine component, need to change signs with _rotate_half method
+    t = (t * angles.cos()) + (_rotate_half(t) * angles.sin())
+    return torch.cat((t, t_pass), dim=-1)
 

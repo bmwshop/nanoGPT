@@ -82,6 +82,10 @@ swa = None # sliding window attention
 #
 scaling_target_sequence_length = None
 softmax_log_k = 0
+# 
+rope_base = 10000
+rope_percentage = 1.0
+rope_wavelengths = None
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open('configurator.py').read()) # overrides from command line or config file

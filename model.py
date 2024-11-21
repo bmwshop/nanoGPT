@@ -84,6 +84,7 @@ class CausalSelfAttention(nn.Module):
             self.rotary_pos_emb = RotaryEmbedding(head_size, 
                 rotary_base=config.rope_base, 
                 rotary_percentage = config.rope_percentage,
+                wavelengths = config.rope_wavelengths,
             )
         elif self.pe == 'xpos2':
             max_xpos2_pos = config.block_size * 10  # Some buffer

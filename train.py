@@ -168,12 +168,15 @@ if init_from == 'scratch':
         logging.info("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
     model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
     if 'rope_base' in config:
+        logging.info(f"using rope_base {config['rope_base']}")
         model_args['rope_base'] = config['rope_base']
     if 'rope_percentage' in config:
+        logging.info(f"using rope_percentage {config['rope_percentage']}")
         model_args['rope_percentage'] = config['rope_percentage']
     if 'rope_wavelengths' in config:
+        logging.info(f"using rope_wavelengths {config['rope_wavelengths']}")
         model_args['rope_wavelengths'] = config['rope_wavelengths']
-        
+
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf)
 elif init_from == 'resume':

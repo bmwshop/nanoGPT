@@ -354,7 +354,7 @@ class GPT(nn.Module):
         # head_size = n_embd // n_head
         if isinstance(config.rope_wavelengths, List):
             num_rope_dims = int(config.n_embd / config.n_head * config.rope_percentage)
-            assert len(config.rope_wavelengths) == num_rope_dims , f"num wavelengths in {config.rope_wavelengths} must match num rope dims {num_rope_dims}"
+            assert len(config.rope_wavelengths) == num_rope_dims // 2 , f"num wavelengths in {config.rope_wavelengths} must match num rope dims {num_rope_dims}"
 
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         # Weight tying

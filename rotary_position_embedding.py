@@ -38,7 +38,7 @@ class RotaryEmbedding(nn.Module):
         self.floors = floors
         if floors is not None:
             logging.info(f'using passed in floors {self.floors}')
-            floors = torch.tensor(floors, dtype=torch.float, device=torch.cuda.current_device())
+            self.floors = torch.tensor(floors, dtype=torch.float, device=torch.cuda.current_device())
         
         self.wavelengths = wavelengths
         if wavelengths is not None:

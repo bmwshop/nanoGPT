@@ -23,6 +23,7 @@ class RotaryEmbedding(nn.Module):
         rotary_base: int = 10000,
         rotary_percentage: float = 1.0,
         wavelengths: List = None,
+        floors: List = None,
     ):
         """
         Args:
@@ -33,7 +34,12 @@ class RotaryEmbedding(nn.Module):
         super().__init__()
         self.rotary_base = rotary_base
         rotary_dim = int(dim * rotary_percentage)
-        logging.info(f'rotary_base: {rotary_base}, rotary_percentage: {rotary_percentage}, dim: {dim}, rotary_dim: {rotary_dim}')
+        logging.info(f'rotary_base: {rotary_base}, rotary_percentage: {rotary_percentage}, dim: {dim}, rotary_dim: {rotary_dim}, wavelengths: {wavelengths}, floors: {floors}')
+        self.floors = floors
+        if floors is not None:
+            logging.info(f'using passed in floors {self.floors}')
+            floors = torch.tensor(floors, dtype=torch.float, device=torch.cuda.current_device())
+        
         self.wavelengths = wavelengths
         if wavelengths is not None:
             logging.info(f'using passed in wavelengths {self.wavelengths}')
@@ -41,13 +47,23 @@ class RotaryEmbedding(nn.Module):
             inv_freq = 2 * torch.pi / wavelengths
         else:
             inv_freq = 1.0 / (self.rotary_base ** (torch.arange(0, rotary_dim, 2).float() / rotary_dim))
+
+
+
+
         self.register_buffer('inv_freq', inv_freq)
 
     def forward(self, max_seq_len):
         seq = torch.arange(max_seq_len, device=self.inv_freq.device)
         seq = seq.type_as(self.inv_freq)
 
-        angles = einsum('i , j -> i j', seq, self.inv_freq)
+        if self.floors is not None:
+            seq = seq.unsqueeze(1).expand(-1, self.inv_freq.shape[0])  # Shape: (T, dim)
+            seq = torch.floor(seq / self.floors) * self.floors
+            angles = seq * self.inv_freq  # Shape: (T, dim)
+        else:
+            angles = einsum('i , j -> i j', seq, self.inv_freq)  # Shape: (T, dim)
+
         # first part even vector components, second part odd vector components,
         #  2 * dim in dimension size
         emb = torch.cat((angles, angles), dim=-1)

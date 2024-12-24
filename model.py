@@ -85,6 +85,7 @@ class CausalSelfAttention(nn.Module):
                 rotary_base=config.rope_base, 
                 rotary_percentage = config.rope_percentage,
                 wavelengths = config.rope_wavelengths,
+                floors = config.rope_floors,
             )
         elif self.pe == 'xpos2':
             max_xpos2_pos = config.block_size * 10  # Some buffer
@@ -176,7 +177,12 @@ class CausalSelfAttention(nn.Module):
             if self.swa and T > self.swa:
                 self.bias  = torch.triu(self.bias , diagonal=-self.swa)
             self.bias = self.bias.view(1, 1, T, T).to(q.device)
+            # q shape: (B, nh, T, hs)
+
+            # this is the classic computation
             att_scores = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))  # Shape: (B, nh, T, T)
+
+
 
             if self.pe == 'alibi':
                 # Implement ALiBi positional bias
@@ -310,6 +316,7 @@ class GPTConfig:
     rope_base: int = 10000  # RoPE base
     rope_percentage: float = 1.0  # rotary_percentage
     rope_wavelengths: Union[str, List] = None # directly pass wavelengths, oveerriding the base
+    rope_floors: Union[str, List] = None # optinally pass floors
     xpos2_decay_base: float = 2.0  # Decay base
     xpos2_decay_angle: float = math.pi / 2  # Soft max angle
     xpos2_adaptive: bool = True  # Should we change decay angle if there's risk of overflow
@@ -351,6 +358,13 @@ class GPT(nn.Module):
         logging.info(f'rope_wavelengths: {self.config.rope_wavelengths}, type: {type(self.config.rope_wavelengths)}')
         if isinstance(self.config.rope_wavelengths, str) and self.config.rope_wavelengths.startswith("["):
             self.config.rope_wavelengths = self.config.rope_wavelengths.strip("[]").split(",")
+
+        logging.info(f'rope_floors: {self.config.rope_floors}, type: {type(self.config.rope_floors)}')
+        if isinstance(self.config.rope_floors, str) and self.config.rope_floors.startswith("["):
+            self.config.rope_floors = self.config.rope_floors.strip("[]").split(",")
+
+        # assert len(config.rope_wavelengths) == len(config.rope_floors)
+
         # head_size = n_embd // n_head
         if isinstance(config.rope_wavelengths, List):
             num_rope_dims = int(config.n_embd / config.n_head * config.rope_percentage)

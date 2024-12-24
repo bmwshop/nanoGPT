@@ -86,6 +86,7 @@ softmax_log_k = 0
 rope_base = 10000
 rope_percentage = 1.0
 rope_wavelengths = None
+rope_floors = None
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str, type(None)))]
 exec(open('configurator.py').read()) # overrides from command line or config file
@@ -174,6 +175,9 @@ if 'rope_percentage' in config:
 if 'rope_wavelengths' in config:
     logging.info(f"using rope_wavelengths {config['rope_wavelengths']}")
     model_args['rope_wavelengths'] = config['rope_wavelengths']
+if 'rope_floors' in config:
+    logging.info(f"using rope_floors {config['rope_floors']}")
+    model_args['rope_floors'] = config['rope_floors']
 
 if init_from == 'scratch':
     # init a new model from scratch

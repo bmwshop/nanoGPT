@@ -61,6 +61,8 @@ class RotaryEmbedding(nn.Module):
             seq = seq.unsqueeze(1).expand(-1, self.inv_freq.shape[0])  # Shape: (T, dim)
             seq = torch.floor(seq / self.floors) * self.floors
             angles = seq * self.inv_freq  # Shape: (T, dim)
+            if torch.is_autocast_enabled(): # need to force autocast
+                angles = angles.to(torch.get_autocast_gpu_dtype())
         else:
             angles = einsum('i , j -> i j', seq, self.inv_freq)  # Shape: (T, dim)
 

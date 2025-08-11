@@ -225,7 +225,11 @@ class CausalSelfAttention(nn.Module):
 
             if self.bias.device != att_scores.device:
                 self.bias = self.bias.to(att_scores.device)
-            att_scores = att_scores.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
+            
+            if self.poly_attn_p > 0: # - inf does not work for polynomials
+                att_scores = att_scores.masked_fill(self.bias[:, :, :T, :T] == 0, float(0.0))
+            else:
+                att_scores = att_scores.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
 
             if self.oss_attn:
                 # Concatenate sinks to the attention scores
@@ -239,7 +243,7 @@ class CausalSelfAttention(nn.Module):
                 
             if self.poly_attn_p > 0:
                 # Compute poly attention
-                logging.info(f'Computing poly attention with p = {self.poly_attn_p}')
+                # logging.info(f'Computing poly attention with p = {self.poly_attn_p}')
                 sf = 1 / math.sqrt(T)
                 att_probs = sf * (att_scores ** self.poly_attn_p)
             else:

@@ -52,7 +52,7 @@ class CausalSelfAttention(nn.Module):
         # Regularization
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
-        self.n_head = config.n_head
+        self.n_head = config.n_head # number of heads
         self.n_embd = config.n_embd
         self.dropout = config.dropout
         
@@ -103,12 +103,43 @@ class CausalSelfAttention(nn.Module):
             if config.flash:
                 self.alibi_slopes = self.alibi_slopes.squeeze() # reverse the double unsqueeze when creating slopes
 
-        if config.flash:
+        # Convert string to boolean if needed
+        flash_bool = config.flash
+        if isinstance(config.flash, str):
+            flash_bool = config.flash.lower() == 'true'
+        
+        logging.info(f'CausalSelfAttention {self.idx}: config.flash = {config.flash}, flash_bool = {flash_bool}, type = {type(config.flash)}')
+        if flash_bool:
             # Flash attention makes GPU go brrrr but support is only in PyTorch >= 2.0
             self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+            logging.info(f'CausalSelfAttention {self.idx}: self.flash = {self.flash}')
         else:
             logging.info('Flash is turned off. GPUs will not go brrrr')
             self.flash = False
+
+        oss_attn_bool = config.oss_attn
+        if isinstance(config.oss_attn, str):
+            oss_attn_bool = config.oss_attn.lower() == 'true'
+        logging.info(f'CausalSelfAttention {self.idx}: config.oss_attn = {config.oss_attn}, oss_attn_bool = {oss_attn_bool}, type = {type(config.oss_attn)}')
+        self.oss_attn = oss_attn_bool
+        if self.oss_attn:
+            assert not self.flash, "OSS attention is not compatible with flash attention"
+            assert not self.swa, "OSS attention is not yet compatible with sliding window attention"
+            logging.info(f'Initializing OSS sinks with shape {self.n_head}')
+            self.sinks = nn.Parameter(torch.empty(self.n_head))
+
+        if self.config.poly_attn_p > 0:
+            assert not self.oss_attn, "Poly attention is not compatible with OSS attention"
+            assert not self.flash, "Poly attention is not compatible with flash attention"
+            assert not self.swa, "Poly attention is not yet compatible with sliding window attention"
+            if isinstance(self.config.poly_attn_p, str):
+                self.poly_attn_p = int(self.config.poly_attn_p)
+            else:
+                self.poly_attn_p = self.config.poly_attn_p
+
+            logging.info(f'Initializing Poly attention with p = {self.poly_attn_p}')
+
+
 
     def forward(self, x, collect_info=False):
         B, T, C = x.size()  # Batch size, sequence length, embedding dimensionality (n_embd)
@@ -196,7 +227,29 @@ class CausalSelfAttention(nn.Module):
                 self.bias = self.bias.to(att_scores.device)
             att_scores = att_scores.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
 
-            att_probs = F.softmax(att_scores, dim=-1)  # Shape: (B, nh, T, T)
+            if self.oss_attn:
+                # Concatenate sinks to the attention scores
+                # self.sinks shape: (n_head,) -> expand to (B, n_head, T, 1)
+                # sinks_expanded = self.sinks.view(1, self.n_head, 1, 1).expand(B, -1, T, -1)
+                # sinks = module.sinks.reshape(1, -1, 1, 1).expand(query.shape[0], -1, query.shape[-2], -1)
+                sinks = self.sinks.reshape(1, -1, 1, 1).expand(B, -1, T, -1) # Shape: (B, nh, T, 1)
+                # Concatenate sinks to the end of attention scores
+                att_scores = torch.cat([att_scores, sinks], dim=-1)  # Shape: (B, nh, T, T+1)
+                att_scores = att_scores - att_scores.max(dim=-1, keepdim=True).values # clip to avoid overflow
+                
+            if self.poly_attn_p > 0:
+                # Compute poly attention
+                logging.info(f'Computing poly attention with p = {self.poly_attn_p}')
+                sf = 1 / math.sqrt(T)
+                att_probs = sf * (att_scores ** self.poly_attn_p)
+            else:
+                att_probs = F.softmax(att_scores, dim=-1)  # Shape: (B, nh, T, T) or (B, nh, T, T+1)
+            
+           
+            if self.oss_attn:
+                # Remove sinks from the attention probabilities
+                att_probs = att_probs[:, :, :, :-1]
+
             att_probs = self.attn_dropout(att_probs)
 
             if collect_info:
@@ -323,6 +376,8 @@ class GPTConfig:
     precision: str = 'bfloat16'  # Precision
     scaling_target_sequence_length: int = None  # Target sequence length for scaling during training
     softmax_log_k: float = 0.0 # 1/T = =(1−k)⋅1+k⋅log(x) where T = pre-softmax temp
+    oss_attn: bool = False # Should we use OSS attention?
+    poly_attn_p: int = 0 # 0 means no poly attention, 1 or more means poly attention
 
 class GPT(nn.Module):
 
@@ -403,6 +458,10 @@ class GPT(nn.Module):
                 module.bias.data.zero_()
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        elif hasattr(module, 'sinks') and module.sinks is not None:
+            # Initialize OSS sinks with small random values
+            logging.info(f"Initializing OSS sinks for {module.sinks.shape}")
+            torch.nn.init.normal_(module.sinks, mean=0.0, std=0.02)
 
     def forward(self, idx, targets=None, collect_info=False, collect_probs_per_layer=False):
         device = idx.device

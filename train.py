@@ -79,6 +79,8 @@ pe = 'abs' # examples: 'abs', 'rope', 'alibi', 'nope'
 flash = True # examples: 'True', 'False'
 loglevel = 'info'
 swa = None # sliding window attention
+oss_attn = False # OSS attention
+poly_attn_p = 0 # Poly attention
 #
 scaling_target_sequence_length = None
 softmax_log_k = 0
@@ -164,7 +166,7 @@ if os.path.exists(meta_path):
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
                   pe=pe,
                   flash=flash,scaling_target_sequence_length=scaling_target_sequence_length,
-                  bias=bias, vocab_size=None, dropout=dropout, softmax_log_k=softmax_log_k, swa=swa) # start with model_args from command line
+                  bias=bias, vocab_size=None, dropout=dropout, softmax_log_k=softmax_log_k, swa=swa, oss_attn=oss_attn, poly_attn_p=poly_attn_p) # start with model_args from command line
 
 if 'rope_base' in config:
     logging.info(f"using rope_base {config['rope_base']}")
